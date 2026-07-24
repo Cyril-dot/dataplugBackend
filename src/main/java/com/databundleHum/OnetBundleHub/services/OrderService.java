@@ -109,7 +109,7 @@ import java.util.UUID;
  * transactions are immediately recognizable in the Paystack dashboard and in
  * any exported settlement reports, e.g.:
  *
- *   databaygh.shop-a1b2c3d4e5f6
+ *   databaygh.shop-A1B2C3D4E5F6A1B2
  *
  * In addition, a human-readable "customerName" field is now included in the
  * metadata sent to Paystack:
@@ -120,6 +120,24 @@ import java.util.UUID;
  * guarantees (paystackService.generateReference() output is still appended
  * after the prefix), does not affect amount/charge calculations, and does
  * not alter the transaction-boundary fixes above.
+ *
+ * ── RECIPIENT-NUMBER PAYER EMAIL (2026-07-24) ────────────────────────────────
+ *
+ * Paystack receipts render the payer as "<email> just paid <business>". To make
+ * receipts self-identifying, the email sent to Paystack for guest orders is now
+ * built from the RECIPIENT phone number on the request — the line the data is
+ * actually being bought for — plus the site domain:
+ *
+ *   0592451539@databaygh.shop
+ *
+ * Wallet top-ups have no recipient number (the customer is funding their own
+ * wallet, not buying data for a line), so they continue to use the user's real
+ * account email. Wallet-funded order placement never touches Paystack at all —
+ * that money was already collected at top-up time — so no email is built there.
+ *
+ * NOTE: the previous guest email was derived from appConfig.getAppBaseUrl(),
+ * which meant a "www." host leaked into the address ("guest@www.databaygh.shop").
+ * SITE_PREFIX is the bare domain, so that no longer happens.
  */
 @Slf4j
 @Service
@@ -131,7 +149,10 @@ public class OrderService {
     /** 10% processing charge passed on to the customer at the point of payment. */
     private static final BigDecimal PAYSTACK_CHARGE_RATE = new BigDecimal("0.10");
 
-    /** Site domain used to prefix Paystack references and customer-name metadata. */
+    /**
+     * Bare site domain (no scheme, no "www.") used to prefix Paystack references,
+     * build payer email addresses and label customers in metadata.
+     */
     private static final String SITE_PREFIX = "databaygh.shop";
 
     private final OrderRepository             orderRepository;
@@ -159,10 +180,12 @@ public class OrderService {
         BigDecimal chargeAmountGhc = addPaystackCharge(basePriceGhc);
 
         // Reference is prefixed with the site domain so it's immediately
-        // recognizable in the Paystack dashboard, e.g. "databaygh.shop-a1b2c3".
+        // recognizable in the Paystack dashboard, e.g. "databaygh.shop-A1B2C3".
         String reference  = SITE_PREFIX + "-" + paystackService.generateReference();
-        String guestEmail = "guest@" + appConfig.getAppBaseUrl()
-                .replaceAll("https?://", "");
+        // Payer email is built from the RECIPIENT number on this request — the
+        // line the bundle is being bought for — so the Paystack receipt reads
+        // "0592451539@databaygh.shop just paid ...".
+        String guestEmail = buildPayerEmail(request.getPhoneNumber());
 
         Map<String, Object> metadata = new HashMap<>();
         metadata.put("type",         "GUEST_ORDER");
@@ -170,7 +193,7 @@ public class OrderService {
         metadata.put("network",      request.getNetwork().name());
         metadata.put("capacityGb",   request.getCapacityGb().toString());
         metadata.put("baseAmountGhc", basePriceGhc.toPlainString());
-        // Human-readable customer label combining phone number + site name,
+        // Human-readable customer label combining recipient number + site name,
         // shown against the transaction in the Paystack dashboard.
         metadata.put("customerName", request.getPhoneNumber() + " - " + SITE_PREFIX);
 
@@ -199,9 +222,9 @@ public class OrderService {
                 .build();
         orderRepository.save(order);
 
-        log.info("[ORDER] Guest order initiated: orderId={} ref={} phone={} network={} gb={} " +
+        log.info("[ORDER] Guest order initiated: orderId={} ref={} email={} phone={} network={} gb={} " +
                         "basePrice={} chargeAmount={}",
-                order.getId(), reference, request.getPhoneNumber(),
+                order.getId(), reference, guestEmail, request.getPhoneNumber(),
                 request.getNetwork(), request.getCapacityGb(), basePriceGhc, chargeAmountGhc);
 
         return InitiateOrderResponse.builder()
@@ -278,11 +301,16 @@ public class OrderService {
 
     // ── Wallet top-up: initiate ───────────────────────────────────────────────
 
+    /**
+     * A top-up funds the user's own wallet — there is no recipient line
+     * involved, so the payer email is the user's real account email rather
+     * than a number-derived address.
+     */
     @Transactional
     public TopUpInitiateResponse initiateTopUp(UUID userId, TopUpInitiateRequest request) {
         User   user      = findUserOrThrow(userId);
         // Reference is prefixed with the site domain so it's immediately
-        // recognizable in the Paystack dashboard, e.g. "databaygh.shop-a1b2c3".
+        // recognizable in the Paystack dashboard, e.g. "databaygh.shop-A1B2C3".
         String reference = SITE_PREFIX + "-" + paystackService.generateReference();
 
         // The amount that actually lands in the wallet once payment is verified.
@@ -392,7 +420,8 @@ public class OrderService {
      * price. See PricingService.resolvePriceForUser for the shared rule.
      *
      * No Paystack processing charge applies here — that 10% was already
-     * collected from the customer when the wallet was topped up.
+     * collected from the customer when the wallet was topped up. Nothing in
+     * this flow reaches Paystack, so no payer email is built.
      *
      * FIX: this method is no longer @Transactional. Each DB write (debit,
      * order-save, failure-handling) is its own short REQUIRES_NEW
@@ -607,6 +636,21 @@ public class OrderService {
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
+
+    /**
+     * Build the email address sent to Paystack as the payer identity, e.g.
+     * "0592451539@databaygh.shop". The input is the RECIPIENT phone number from
+     * the order request — the line the bundle is being delivered to — not the
+     * account holder's number. Non-digit characters (spaces, "+", dashes) are
+     * stripped so the local part is always a valid address component.
+     */
+    private String buildPayerEmail(String phoneNumber) {
+        String digits = phoneNumber == null ? "" : phoneNumber.replaceAll("\\D", "");
+        if (digits.isEmpty()) {
+            digits = "guest";
+        }
+        return digits + "@" + SITE_PREFIX;
+    }
 
     private void rejectIfDuplicate(UUID userId, String phoneNumber,
                                    PlatformSettings.Network network,

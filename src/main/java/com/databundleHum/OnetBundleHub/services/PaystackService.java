@@ -39,11 +39,14 @@ public class PaystackService {
     // ── Reference generation ──────────────────────────────────────────────────
 
     /**
-     * Generate a unique Paystack transaction reference.
-     * Format: DBH-<UUID-short> — short enough for Paystack, unique enough for production.
+     * Generate a unique Paystack transaction reference suffix.
+     *
+     * NOTE: OrderService prefixes this with the site domain, producing
+     * references like "databaygh.shop-A1B2C3D4E5F6A1B2". The old "DBH-"
+     * prefix was removed so the site domain is the only prefix present.
      */
     public String generateReference() {
-        return "DBH-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase();
+        return UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase();
     }
 
     // ── Initiate transaction ──────────────────────────────────────────────────
