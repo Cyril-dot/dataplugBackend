@@ -23,6 +23,12 @@ import java.util.Map;
  *   <li>{@code APP_FROM_EMAIL} — e.g. noreply@databundleshub.com</li>
  *   <li>{@code APP_FROM_NAME} — e.g. DataBundlesHub</li>
  * </ul>
+ *
+ * ── CHECKER FEATURE (2026-08-26) ──────────────────────────────────────────
+ * sendCheckerCredentialsSms() is a new PUBLIC method added for
+ * CheckerService — result-checker orders deliver serial/PIN via SMS in
+ * addition to showing them on-screen in the API response. It reuses the
+ * existing private sendSms() helper below (unchanged).
  */
 @Slf4j
 @Service
@@ -77,6 +83,51 @@ public class NotificationService {
         log.warn("Sending order failed alert: to={} orderId={}", email, orderId);
         sendEmail(email, fullName, "Your data bundle order failed — Order #" + orderId,
                 "Hi " + fullName + ",\n\nUnfortunately your data bundle order #" + orderId
+                        + " could not be fulfilled. Our support team will review and issue a refund "
+                        + "if payment was taken.\n\nTeam DBH");
+    }
+
+    // ── Checker alerts (NEW) ────────────────────────────────────────────────────
+
+    /**
+     * Delivers a purchased result-checker's serial/PIN via SMS.
+     * Called by CheckerService immediately after a DataBossHub checker
+     * purchase succeeds. Never throws — SMS failures are logged only, same
+     * as every other notification method here; the credentials are also
+     * always returned in the API response and stored in checker history,
+     * so SMS delivery failing never means the customer loses their PIN.
+     *
+     * @param phone       recipient phone number
+     * @param examType    "BECE" or "WASSCE" (display string)
+     * @param serial      checker serial number
+     * @param pin         checker PIN
+     * @param resultsLink optional URL to check results, may be null
+     */
+    @Async
+    public void sendCheckerCredentialsSms(String phone, String examType, String serial,
+                                          String pin, String resultsLink) {
+        log.info("Sending checker credentials SMS: to={} examType={}", phone, examType);
+
+        StringBuilder message = new StringBuilder();
+        message.append("Your ").append(examType).append(" checker:\n");
+        message.append("Serial: ").append(serial).append("\n");
+        message.append("PIN: ").append(pin);
+        if (resultsLink != null && !resultsLink.isBlank()) {
+            message.append("\nCheck results: ").append(resultsLink);
+        }
+
+        sendSms(phone, message.toString());
+    }
+
+    /**
+     * Notifies the user that their checker order could not be fulfilled.
+     * Mirrors sendOrderFailedAlert but for checker purchases.
+     */
+    @Async
+    public void sendCheckerOrderFailedAlert(String email, String fullName, Long checkerOrderId) {
+        log.warn("Sending checker order failed alert: to={} checkerOrderId={}", email, checkerOrderId);
+        sendEmail(email, fullName, "Your result checker order failed — Order #" + checkerOrderId,
+                "Hi " + fullName + ",\n\nUnfortunately your result checker order #" + checkerOrderId
                         + " could not be fulfilled. Our support team will review and issue a refund "
                         + "if payment was taken.\n\nTeam DBH");
     }
@@ -191,7 +242,7 @@ public class NotificationService {
 
     /**
      * Sends an SMS via the Arkesel API.
-     * Used for OTP and order status updates on mobile numbers.
+     * Used for OTP, order status updates, and checker credential delivery.
      *
      * @param phone   destination phone number
      * @param message SMS body text

@@ -36,108 +36,41 @@ import java.util.UUID;
 
 /**
  * Handles all order flows:
- *  - Guest checkout  (Paystack popup → webhook → Big Dreams Data provision)
+ *  - Guest checkout  (Korapay Checkout Redirect → webhook → DataPrimo provision)
  *  - User wallet purchase
  *  - Reseller wallet purchase (wholesale price)
  *  - Order status queries
  *
  * ── TRANSACTION-BOUNDARY FIX (2026-07-09) ────────────────────────────────────
+ * No flow below holds an open transaction across an external HTTP call; each
+ * DB write is its own short REQUIRES_NEW transaction, and upstream calls run
+ * with no transaction open on the calling thread — prevents idle-connection
+ * timeouts from rolling back already-committed order rows.
  *
- * Previously, placeWalletOrder / placeResellerWalletOrder / fulfilPaystackOrder
- * were each annotated with a single top-level @Transactional. Even though
- * BigDreamsService.purchase() and AffiliateCommissionService.processCommission()
- * run in their own REQUIRES_NEW transactions, Spring's REQUIRES_NEW SUSPENDS
- * the outer transaction rather than closing it — the outer method's DB
- * connection stays open and idle for the entire duration of:
- *   - the outbound HTTP call(s) to Big Dreams (with retries), and
- *   - the commission check (which was observed taking ~5 minutes)
+ * ── PROCESSING CHARGE (2026-07-10) ───────────────────────────────────────────
+ * A 10% processing charge is passed on to the customer at the exact moment
+ * real money moves through Korapay (guest checkout, wallet top-up). Wallet-
+ * funded order placement is untouched — that 10% was already collected at
+ * top-up time.
  *
- * Postgres's idle_in_transaction_session_timeout then kills that idle
- * connection, the outer transaction rolls back, and the order INSERT that
- * happened earlier in that same outer transaction is undone — the order row
- * disappears entirely even though BigDreams already accepted it and it was
- * already visible to other transactions as PENDING.
+ * ── MIGRATION FROM PAYSTACK TO KORAPAY (2026-08-26) ──────────────────────────
+ * Runs entirely on KorapayService now. Key differences from Paystack:
+ *   - Amounts are in GHS directly, not pesewas — no toSmallestUnit() calls.
+ *   - initiateTransaction() returns "checkout_url" not "authorization_url"
+ *     (DTO field name authorizationUrl kept for compatibility, holds the
+ *     Korapay checkout_url now).
+ *   - Requires a customerName param Paystack never needed.
+ *   - Needs an explicit redirectUrl (Checkout Redirect flow).
+ *   - Order.paystackRef / PAYSTACK enum constant are UNCHANGED — renaming
+ *     the DB column/enum is a separate migration (TODO below).
  *
- * THE FIX: none of the three flows below hold an open transaction across an
- * external call anymore. Each flow is a plain (non-@Transactional) orchestrator
- * method that:
- *   1. calls small, dedicated @Transactional(REQUIRES_NEW) methods for each
- *      DB write (debit, save, mark-failed, mark-verified), each committing
- *      and releasing its connection immediately, then
- *   2. calls out to BigDreamsService / AffiliateCommissionService with NO
- *      transaction open on the calling thread at all.
- *
- * This means a slow commission check or a slow upstream API call can never
- * again cause a committed order row to vanish on rollback.
- *
- * ── PAYSTACK PROCESSING CHARGE (2026-07-10) ──────────────────────────────────
- *
- * A 10% processing charge is now passed on to the paying customer at the
- * exact moment real money moves through Paystack:
- *   - Guest checkout (initiateGuestOrder): the guest pays bundle price × 1.10.
- *   - Wallet top-up (initiateTopUp / webhook / manual verify): the customer
- *     pays top-up amount × 1.10, but only the ORIGINAL top-up amount is ever
- *     credited to their wallet.
- *
- * Wallet-funded order placement (placeWalletOrder / placeResellerWalletOrder)
- * is deliberately left untouched — that money already had the 10% collected
- * from the customer when it entered the wallet via top-up, so charging it
- * again on spend would double-charge them.
- *
- * IMPORTANT: WebhookController must forward the BASE (pre-charge) amount —
- * read from Paystack metadata key "baseAmountGhc" — into
- * processTopUpWebhook(), not the raw amount Paystack reports as paid
- * (which includes the 10% charge). Crediting the raw Paystack amount would
- * silently give the customer a free 10% top-up.
- *
- * ── MISSING authorizationUrl FIX (2026-07-10) ────────────────────────────────
- *
- * initiateGuestOrder() was calling paystackService.initiateTransaction(...)
- * and discarding the return value entirely, so InitiateOrderResponse never
- * carried the Paystack authorization_url back to the frontend. The frontend
- * had nothing to redirect the guest to for payment approval, even though an
- * Order row was already saved as PENDING. The webhook path was never the
- * issue — fulfilPaystackOrder() only runs on a verified charge.success event,
- * so nothing was ever provisioned without a real payment. The fix below
- * mirrors initiateTopUp(): capture the Paystack init response and populate
- * authorizationUrl on InitiateOrderResponse.
- *
- * ── PAYSTACK REFERENCE / METADATA SITE PREFIX (2026-07-23) ───────────────────
- *
- * Every Paystack reference generated by this service (guest orders and wallet
- * top-ups) is now prefixed with the site domain "databaygh.shop-" so that
- * transactions are immediately recognizable in the Paystack dashboard and in
- * any exported settlement reports, e.g.:
- *
- *   databaygh.shop-A1B2C3D4E5F6A1B2
- *
- * In addition, a human-readable "customerName" field is now included in the
- * metadata sent to Paystack:
- *   - Guest orders:  "<phoneNumber> - databaygh.shop"
- *   - Wallet top-ups: "<user full name> - databaygh.shop"
- *
- * This is purely additive — it does not change reference uniqueness
- * guarantees (paystackService.generateReference() output is still appended
- * after the prefix), does not affect amount/charge calculations, and does
- * not alter the transaction-boundary fixes above.
- *
- * ── RECIPIENT-NUMBER PAYER EMAIL (2026-07-24) ────────────────────────────────
- *
- * Paystack receipts render the payer as "<email> just paid <business>". To make
- * receipts self-identifying, the email sent to Paystack for guest orders is now
- * built from the RECIPIENT phone number on the request — the line the data is
- * actually being bought for — plus the site domain:
- *
- *   0592451539@databaygh.shop
- *
- * Wallet top-ups have no recipient number (the customer is funding their own
- * wallet, not buying data for a line), so they continue to use the user's real
- * account email. Wallet-funded order placement never touches Paystack at all —
- * that money was already collected at top-up time — so no email is built there.
- *
- * NOTE: the previous guest email was derived from appConfig.getAppBaseUrl(),
- * which meant a "www." host leaked into the address ("guest@www.databaygh.shop").
- * SITE_PREFIX is the bare domain, so that no longer happens.
+ * ── MIGRATION FROM BIG DREAMS TO DATAPRIMO (2026-08-26) ──────────────────────
+ * bigDreamsService.purchase(order) → provisionOrder(order), which resolves
+ * this bundle's DataPrimo productId/network from PlatformSettings and calls
+ * dataPrimoService.purchase(order, productId, network). Delivery confirmation
+ * (PENDING → COMPLETED) now happens via DataPrimoService.checkDeliveryStatus(),
+ * a @Scheduled poller hitting GET /orders/{id} per pending order — see that
+ * class's Javadoc for the full lifecycle.
  */
 @Slf4j
 @Service
@@ -147,10 +80,10 @@ public class OrderService {
     private static final int DUPLICATE_WINDOW_SECONDS = 30;
 
     /** 10% processing charge passed on to the customer at the point of payment. */
-    private static final BigDecimal PAYSTACK_CHARGE_RATE = new BigDecimal("0.10");
+    private static final BigDecimal PROCESSING_CHARGE_RATE = new BigDecimal("0.10");
 
     /**
-     * Bare site domain (no scheme, no "www.") used to prefix Paystack references,
+     * Bare site domain (no scheme, no "www.") used to prefix Korapay references,
      * build payer email addresses and label customers in metadata.
      */
     private static final String SITE_PREFIX = "databaygh.shop";
@@ -160,8 +93,8 @@ public class OrderService {
     private final PlatformSettingsRepository  platformSettingsRepository;
     private final ProcessedRefRepository      processedRefRepository;
     private final WalletService               walletService;
-    private final PaystackService             paystackService;
-    private final BigDreamsService            bigDreamsService;
+    private final KorapayService              korapayService;
+    private final DataPrimoService            dataPrimoService;
     private final NotificationService         notificationService;
     private final AffiliateCommissionService  affiliateCommissionService;
     private final AppConfig                   appConfig;
@@ -171,20 +104,16 @@ public class OrderService {
 
     @Transactional
     public InitiateOrderResponse initiateGuestOrder(InitiateGuestOrderRequest request) {
+        log.info("[ORDER] initiateGuestOrder: phone={} network={} gb={}",
+                request.getPhoneNumber(), request.getNetwork(), request.getCapacityGb());
+
         PlatformSettings settings = getActiveSettings(
                 request.getNetwork(), request.getCapacityGb());
 
-        // Base bundle price (tracked on the order for cost/commission purposes).
         BigDecimal basePriceGhc = settings.getPublicPriceGhc();
-        // What the guest is actually charged via Paystack, including the 10% fee.
-        BigDecimal chargeAmountGhc = addPaystackCharge(basePriceGhc);
+        BigDecimal chargeAmountGhc = addProcessingCharge(basePriceGhc);
 
-        // Reference is prefixed with the site domain so it's immediately
-        // recognizable in the Paystack dashboard, e.g. "databaygh.shop-A1B2C3".
-        String reference  = SITE_PREFIX + "-" + paystackService.generateReference();
-        // Payer email is built from the RECIPIENT number on this request — the
-        // line the bundle is being bought for — so the Paystack receipt reads
-        // "0592451539@databaygh.shop just paid ...".
+        String reference  = SITE_PREFIX + "-" + korapayService.generateReference();
         String guestEmail = buildPayerEmail(request.getPhoneNumber());
 
         Map<String, Object> metadata = new HashMap<>();
@@ -193,17 +122,14 @@ public class OrderService {
         metadata.put("network",      request.getNetwork().name());
         metadata.put("capacityGb",   request.getCapacityGb().toString());
         metadata.put("baseAmountGhc", basePriceGhc.toPlainString());
-        // Human-readable customer label combining recipient number + site name,
-        // shown against the transaction in the Paystack dashboard.
         metadata.put("customerName", request.getPhoneNumber() + " - " + SITE_PREFIX);
 
-        // FIX: capture the Paystack init response so we can return the
-        // authorization_url — without it the frontend has nothing to
-        // redirect the customer to for approval/payment.
-        Map<String, Object> paystackData = paystackService.initiateTransaction(
+        Map<String, Object> korapayData = korapayService.initiateTransaction(
                 guestEmail,
+                request.getPhoneNumber(),
                 chargeAmountGhc,
                 reference,
+                buildRedirectUrl(),
                 metadata
         );
 
@@ -213,8 +139,8 @@ public class OrderService {
                 .capacityGb(request.getCapacityGb())
                 .costPriceGhc(basePriceGhc)
                 .sellingPriceGhc(basePriceGhc)
-                .paymentMethod(Order.PaymentMethod.PAYSTACK)
-                .paystackRef(reference)
+                .paymentMethod(Order.PaymentMethod.PAYSTACK) // TODO: rename enum constant to KORAPAY in a follow-up migration
+                .paystackRef(reference)                      // TODO: rename field to gatewayRef in a follow-up migration
                 .status(Order.OrderStatus.PENDING)
                 .guest(true)
                 .orderedByRole(Order.OrderedByRole.USER)
@@ -229,9 +155,8 @@ public class OrderService {
 
         return InitiateOrderResponse.builder()
                 .paystackReference(reference)
-                .authorizationUrl((String) paystackData.get("authorization_url"))
+                .authorizationUrl((String) korapayData.get("checkout_url"))
                 .amountGhc(chargeAmountGhc)
-                .amountPesewas(paystackService.toSmallestUnit(chargeAmountGhc))
                 .email(guestEmail)
                 .phoneNumber(request.getPhoneNumber())
                 .network(request.getNetwork().name())
@@ -241,56 +166,50 @@ public class OrderService {
 
     // ── Guest checkout: step 2 — webhook fulfilment ───────────────────────────
 
-    /**
-     * Called by WebhookController after HMAC-SHA512 validation. Idempotent —
-     * duplicate Paystack references are silently ignored.
-     *
-     * FIX: no longer a single @Transactional spanning the provisioning call.
-     * The VERIFIED write is its own short transaction; provisioning and
-     * commission happen with no transaction open; failure handling is its
-     * own short transaction.
-     */
-    public void fulfilPaystackOrder(String paystackRef) {
-        if (processedRefRepository.existsByReference(paystackRef)) {
-            log.warn("[ORDER] Duplicate Paystack reference ignored: ref={}", paystackRef);
+    public void fulfilKorapayOrder(String reference) {
+        log.info("[ORDER] fulfilKorapayOrder: ref={}", reference);
+
+        if (processedRefRepository.existsByReference(reference)) {
+            log.warn("[ORDER] Duplicate Korapay reference ignored: ref={}", reference);
             return;
         }
 
-        Order order = markPaystackOrderVerified(paystackRef);
+        Order order = markKorapayOrderVerified(reference);
 
         try {
-            bigDreamsService.purchase(order);
-            // Guest orders have no user → processCommission skips silently.
+            provisionOrder(order);
             affiliateCommissionService.processCommission(order);
         } catch (UpstreamApiException ex) {
-            log.error("[ORDER] Bundle provision failed after Paystack payment: orderId={} ref={} error={}",
-                    order.getId(), paystackRef, ex.getMessage());
-            markOrderFailedAfterPaystackFailure(order);
+            log.error("[ORDER] Bundle provision failed after Korapay payment: orderId={} ref={} error={}",
+                    order.getId(), reference, ex.getMessage());
+            markOrderFailedAfterPaymentFailure(order);
         }
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    protected Order markPaystackOrderVerified(String paystackRef) {
-        Order order = orderRepository.findByPaystackRef(paystackRef)
+    protected Order markKorapayOrderVerified(String reference) {
+        Order order = orderRepository.findByPaystackRef(reference) // TODO: rename repo method to findByGatewayRef
                 .orElseThrow(() -> new ResourceNotFoundException(
-                        "Order not found for Paystack ref: " + paystackRef));
+                        "Order not found for Korapay ref: " + reference));
 
         order.setStatus(Order.OrderStatus.VERIFIED);
         orderRepository.save(order);
 
         processedRefRepository.save(ProcessedRef.builder()
-                .reference(paystackRef)
+                .reference(reference)
                 .eventType("GUEST_ORDER")
                 .build());
 
-        log.info("[ORDER] Paystack order VERIFIED: orderId={} ref={}", order.getId(), paystackRef);
+        log.info("[ORDER] Korapay order VERIFIED: orderId={} ref={}", order.getId(), reference);
         return order;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    protected void markOrderFailedAfterPaystackFailure(Order order) {
+    protected void markOrderFailedAfterPaymentFailure(Order order) {
         order.setStatus(Order.OrderStatus.FAILED);
         orderRepository.save(order);
+
+        log.warn("[ORDER] Order marked FAILED after payment: orderId={}", order.getId());
 
         if (order.getUser() != null) {
             notificationService.sendOrderFailedAlert(
@@ -301,35 +220,28 @@ public class OrderService {
 
     // ── Wallet top-up: initiate ───────────────────────────────────────────────
 
-    /**
-     * A top-up funds the user's own wallet — there is no recipient line
-     * involved, so the payer email is the user's real account email rather
-     * than a number-derived address.
-     */
     @Transactional
     public TopUpInitiateResponse initiateTopUp(UUID userId, TopUpInitiateRequest request) {
-        User   user      = findUserOrThrow(userId);
-        // Reference is prefixed with the site domain so it's immediately
-        // recognizable in the Paystack dashboard, e.g. "databaygh.shop-A1B2C3".
-        String reference = SITE_PREFIX + "-" + paystackService.generateReference();
+        log.info("[ORDER] initiateTopUp: userId={} amount={}", userId, request.getAmount());
 
-        // The amount that actually lands in the wallet once payment is verified.
+        User   user      = findUserOrThrow(userId);
+        String reference = SITE_PREFIX + "-" + korapayService.generateReference();
+
         BigDecimal baseAmountGhc = request.getAmount();
-        // The amount the customer is charged via Paystack, including the 10% fee.
-        BigDecimal chargeAmountGhc = addPaystackCharge(baseAmountGhc);
+        BigDecimal chargeAmountGhc = addProcessingCharge(baseAmountGhc);
 
         Map<String, Object> metadata = new HashMap<>();
         metadata.put("type",          "WALLET_TOPUP");
         metadata.put("userId",        userId.toString());
         metadata.put("baseAmountGhc", baseAmountGhc.toPlainString());
-        // Human-readable customer label combining the user's name + site name,
-        // shown against the transaction in the Paystack dashboard.
         metadata.put("customerName", user.getFullName() + " - " + SITE_PREFIX);
 
-        Map<String, Object> paystackData = paystackService.initiateTransaction(
+        Map<String, Object> korapayData = korapayService.initiateTransaction(
                 user.getEmail(),
+                user.getFullName(),
                 chargeAmountGhc,
                 reference,
+                buildRedirectUrl(),
                 metadata
         );
 
@@ -339,43 +251,40 @@ public class OrderService {
         return TopUpInitiateResponse.builder()
                 .paystackReference(reference)
                 .amountGhc(chargeAmountGhc)
-                .amountPesewas(paystackService.toSmallestUnit(chargeAmountGhc))
                 .email(user.getEmail())
-                .authorizationUrl((String) paystackData.get("authorization_url"))
+                .authorizationUrl((String) korapayData.get("checkout_url"))
                 .build();
     }
 
     // ── Wallet top-up: webhook credit ─────────────────────────────────────────
 
-    /**
-     * @param amountGhc MUST be the BASE (pre-charge) top-up amount, read by
-     *                  WebhookController from Paystack metadata key
-     *                  "baseAmountGhc" — NOT the raw amount Paystack reports
-     *                  as paid, which includes the 10% processing charge.
-     */
     @Transactional
-    public void processTopUpWebhook(UUID userId, BigDecimal amountGhc, String paystackRef) {
-        if (processedRefRepository.existsByReference(paystackRef)) {
-            log.warn("[ORDER] Duplicate top-up reference ignored: ref={}", paystackRef);
+    public void processTopUpWebhook(UUID userId, BigDecimal amountGhc, String reference) {
+        log.info("[ORDER] processTopUpWebhook: userId={} amount={} ref={}", userId, amountGhc, reference);
+
+        if (processedRefRepository.existsByReference(reference)) {
+            log.warn("[ORDER] Duplicate top-up reference ignored: ref={}", reference);
             return;
         }
 
         walletService.credit(userId, amountGhc, TransactionType.TOPUP,
-                "Wallet top-up via Paystack", paystackRef);
+                "Wallet top-up via Korapay", reference);
 
         processedRefRepository.save(ProcessedRef.builder()
-                .reference(paystackRef)
+                .reference(reference)
                 .eventType("WALLET_TOPUP")
                 .build());
 
         log.info("[ORDER] Wallet top-up credited: userId={} amount={} ref={}",
-                userId, amountGhc, paystackRef);
+                userId, amountGhc, reference);
     }
 
     // ── Wallet top-up: manual verify fallback ─────────────────────────────────
 
     @Transactional
     public WalletResponse verifyTopUp(UUID userId, TopUpVerifyRequest request) {
+        log.info("[ORDER] verifyTopUp: userId={} ref={}", userId, request.getPaystackRef());
+
         if (processedRefRepository.existsByReference(request.getPaystackRef())) {
             log.info("[ORDER] Top-up already processed: ref={}", request.getPaystackRef());
             return WalletResponse.builder()
@@ -384,12 +293,10 @@ public class OrderService {
                     .build();
         }
 
-        Map<String, Object> txData         = paystackService.verifyTransaction(
+        Map<String, Object> txData         = korapayService.verifyTransaction(
                 request.getPaystackRef());
-        BigDecimal          chargedAmountGhc = paystackService.extractAmountGhc(txData);
-        // Paystack reports the charged amount (base × 1.10) — back out the fee
-        // so the wallet is only credited with the original top-up amount.
-        BigDecimal          baseAmountGhc    = removePaystackCharge(chargedAmountGhc);
+        BigDecimal          chargedAmountGhc = korapayService.extractAmountGhc(txData);
+        BigDecimal          baseAmountGhc    = removeProcessingCharge(chargedAmountGhc);
 
         walletService.credit(userId, baseAmountGhc, TransactionType.TOPUP,
                 "Wallet top-up (manual verify)", request.getPaystackRef());
@@ -410,43 +317,21 @@ public class OrderService {
 
     // ── User wallet order ─────────────────────────────────────────────────────
 
-    /**
-     * Places a wallet-funded data bundle order for a regular user.
-     *
-     * Price resolution: if the user was referred by a reseller
-     * (User.referredByReseller), they pay that reseller's custom price for this
-     * exact bundle if one exists, falling back to the admin's public price
-     * otherwise. Users with no referring reseller always pay the admin's public
-     * price. See PricingService.resolvePriceForUser for the shared rule.
-     *
-     * No Paystack processing charge applies here — that 10% was already
-     * collected from the customer when the wallet was topped up. Nothing in
-     * this flow reaches Paystack, so no payer email is built.
-     *
-     * FIX: this method is no longer @Transactional. Each DB write (debit,
-     * order-save, failure-handling) is its own short REQUIRES_NEW
-     * transaction that commits and releases its connection immediately.
-     * bigDreamsService.purchase() and affiliateCommissionService.
-     * processCommission() are called with NO transaction open on this
-     * thread — a slow commission check can no longer roll back the order.
-     */
     public OrderResponse placeWalletOrder(UUID userId, WalletOrderRequest request) {
+        log.info("[ORDER] placeWalletOrder: userId={} phone={} network={} gb={}",
+                userId, request.getPhoneNumber(), request.getNetwork(), request.getCapacityGb());
+
         User user = findUserOrThrow(userId);
         PlatformSettings settings = getActiveSettings(request.getNetwork(), request.getCapacityGb());
 
-        // Reseller-referred users pay their referring reseller's price for this
-        // bundle (falling back to admin public price if unset); everyone else
-        // pays admin's public price.
         BigDecimal price = pricingService.resolvePriceForUser(user, settings);
 
         rejectIfDuplicate(userId, request.getPhoneNumber(), request.getNetwork(),
                 request.getCapacityGb(), "USER");
 
-        // 1. Debit wallet — own transaction via WalletService
         walletService.debit(userId, price, TransactionType.PURCHASE,
                 "Data bundle " + request.getCapacityGb() + "GB " + request.getNetwork(), null);
 
-        // 2. Save order PENDING — own short transaction, commits immediately
         Order order;
         try {
             order = saveNewOrder(createPendingOrder(user, request, price));
@@ -464,17 +349,15 @@ public class OrderService {
                             + DUPLICATE_WINDOW_SECONDS + " seconds.");
         }
 
-        // 3. Provision + commission — NO transaction open on this thread.
         try {
-            bigDreamsService.purchase(order);                       // own REQUIRES_NEW, commits
-            affiliateCommissionService.processCommission(order);     // own REQUIRES_NEW, commits
+            provisionOrder(order);
+            affiliateCommissionService.processCommission(order);
         } catch (UpstreamApiException ex) {
             handleProvisioningFailure(order.getId(), user, price, ex);
         }
 
         return toOrderResponse(orderRepository.findById(order.getId()).orElseThrow());
     }
-
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     protected Order saveNewOrder(Order order) {
@@ -507,22 +390,18 @@ public class OrderService {
         walletService.credit(user.getId(), price, TransactionType.REFUND,
                 "Refund: failed bundle delivery for order #" + order.getId(), null);
         notificationService.sendOrderFailedAlert(user.getEmail(), user.getFullName(), order.getId());
+
+        log.error("[ORDER] Provisioning failed, wallet refunded: orderId={} userId={} amount={} error={}",
+                orderId, user.getId(), price, ex.getMessage());
     }
 
     // ── Reseller wallet order ─────────────────────────────────────────────────
 
-    /**
-     * Places a wallet-funded data bundle order for a reseller (wholesale price).
-     *
-     * No Paystack processing charge applies here — that 10% was already
-     * collected from the reseller when their wallet was topped up.
-     *
-     * FIX: same pattern as placeWalletOrder — no top-level @Transactional,
-     * each DB write is its own short REQUIRES_NEW transaction, and
-     * provisioning/commission run with no transaction open on this thread.
-     */
     public OrderResponse placeResellerWalletOrder(UUID userId, WalletOrderRequest request,
                                                   BigDecimal sellingPriceGhc) {
+        log.info("[ORDER] placeResellerWalletOrder: userId={} phone={} network={} gb={}",
+                userId, request.getPhoneNumber(), request.getNetwork(), request.getCapacityGb());
+
         User             user      = findUserOrThrow(userId);
         PlatformSettings settings  = getActiveSettings(
                 request.getNetwork(), request.getCapacityGb());
@@ -579,10 +458,10 @@ public class OrderService {
                 request.getNetwork(), request.getCapacityGb(), costPrice, sellingPriceGhc);
 
         try {
-            bigDreamsService.purchase(order);
+            provisionOrder(order);
             affiliateCommissionService.processCommission(order);
         } catch (UpstreamApiException ex) {
-            log.error("[ORDER] Big Dreams provision failed for reseller order: " +
+            log.error("[ORDER] DataPrimo provision failed for reseller order: " +
                             "orderId={} error={}",
                     order.getId(), ex.getMessage());
             markResellerOrderFailed(order.getId(), user, costPrice);
@@ -607,6 +486,35 @@ public class OrderService {
                 user.getEmail(), user.getFullName(), order.getId());
     }
 
+    // ── DataPrimo provisioning helper ─────────────────────────────────────────
+
+    /**
+     * Resolves this order's (network, capacityGb) to a DataPrimo
+     * productId/network via PlatformSettings, then calls DataPrimoService.
+     * Fails fast (before any HTTP call) if the bundle hasn't been
+     * catalog-mapped yet.
+     */
+    private void provisionOrder(Order order) {
+        PlatformSettings settings = getActiveSettings(order.getNetwork(), order.getCapacityGb());
+
+        String productId = settings.getDataprimoProductId();
+        String network    = settings.getDataprimoNetwork();
+
+        log.info("[ORDER] provisionOrder: orderId={} network={} capacityGb={} → dataprimoProductId={} dataprimoNetwork={}",
+                order.getId(), order.getNetwork(), order.getCapacityGb(), productId, network);
+
+        if (productId == null || productId.isBlank() || network == null || network.isBlank()) {
+            log.error("[ORDER] No DataPrimo catalog mapping for orderId={} network={} capacityGb={}",
+                    order.getId(), order.getNetwork(), order.getCapacityGb());
+            throw new UpstreamApiException(
+                    "Bundle network=" + order.getNetwork() + " capacityGb=" + order.getCapacityGb()
+                            + " has no DataPrimo catalog mapping (dataprimoProductId/dataprimoNetwork "
+                            + "not set on PlatformSettings) — cannot provision orderId=" + order.getId());
+        }
+
+        dataPrimoService.purchase(order, productId, network);
+    }
+
     // ── Order queries ─────────────────────────────────────────────────────────
 
     @Transactional(readOnly = true)
@@ -628,28 +536,25 @@ public class OrderService {
     }
 
     @Transactional(readOnly = true)
-    public OrderResponse getOrderStatusByRef(String paystackRef) {
-        Order order = orderRepository.findByPaystackRef(paystackRef)
+    public OrderResponse getOrderStatusByRef(String reference) {
+        Order order = orderRepository.findByPaystackRef(reference) // TODO: rename repo method to findByGatewayRef
                 .orElseThrow(() -> new ResourceNotFoundException(
-                        "Order not found for ref: " + paystackRef));
+                        "Order not found for ref: " + reference));
         return toOrderResponse(order);
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    /**
-     * Build the email address sent to Paystack as the payer identity, e.g.
-     * "0592451539@databaygh.shop". The input is the RECIPIENT phone number from
-     * the order request — the line the bundle is being delivered to — not the
-     * account holder's number. Non-digit characters (spaces, "+", dashes) are
-     * stripped so the local part is always a valid address component.
-     */
     private String buildPayerEmail(String phoneNumber) {
         String digits = phoneNumber == null ? "" : phoneNumber.replaceAll("\\D", "");
         if (digits.isEmpty()) {
             digits = "guest";
         }
         return digits + "@" + SITE_PREFIX;
+    }
+
+    private String buildRedirectUrl() {
+        return appConfig.getAppBaseUrl() + "/payment/callback";
     }
 
     private void rejectIfDuplicate(UUID userId, String phoneNumber,
@@ -695,19 +600,17 @@ public class OrderService {
                                 + " capacityGb=" + capacityGb));
     }
 
-    // ── Paystack charge helpers ──────────────────────────────────────────────
+    // ── Processing charge helpers ────────────────────────────────────────────
 
-    /** Adds the 10% processing charge on top of a base amount (e.g. 6.00 → 6.60). */
-    private BigDecimal addPaystackCharge(BigDecimal baseAmountGhc) {
+    private BigDecimal addProcessingCharge(BigDecimal baseAmountGhc) {
         return baseAmountGhc
-                .multiply(BigDecimal.ONE.add(PAYSTACK_CHARGE_RATE))
+                .multiply(BigDecimal.ONE.add(PROCESSING_CHARGE_RATE))
                 .setScale(2, RoundingMode.HALF_UP);
     }
 
-    /** Reverses the 10% processing charge to recover the base amount (e.g. 6.60 → 6.00). */
-    private BigDecimal removePaystackCharge(BigDecimal chargedAmountGhc) {
+    private BigDecimal removeProcessingCharge(BigDecimal chargedAmountGhc) {
         return chargedAmountGhc
-                .divide(BigDecimal.ONE.add(PAYSTACK_CHARGE_RATE), 2, RoundingMode.HALF_UP);
+                .divide(BigDecimal.ONE.add(PROCESSING_CHARGE_RATE), 2, RoundingMode.HALF_UP);
     }
 
     // ── Mapper ────────────────────────────────────────────────────────────────

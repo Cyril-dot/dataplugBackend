@@ -234,6 +234,13 @@ public class Order {
     @Builder.Default
     private LocalDateTime updatedAt = LocalDateTime.now();
 
+
+    @Column(name = "dataprimo_order_id", length = 100)
+    private String dataprimoOrderId;
+
+    @Column(name = "dataprimo_reference", length = 100)
+    private String dataprimoReference;
+
     @PreUpdate
     public void onUpdate() {
         this.updatedAt = LocalDateTime.now();

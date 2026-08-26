@@ -1,6 +1,8 @@
 package com.databundleHum.OnetBundleHub.controllers;
 
+import com.databundleHum.OnetBundleHub.services.CheckerService;
 import com.databundleHum.OnetBundleHub.services.OrderService;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -24,79 +26,67 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/webhooks")
 @RequiredArgsConstructor
-@Tag(name = "Webhook", description = "Paystack webhook receiver")
+@Tag(name = "Webhook", description = "Korapay webhook receiver")
 public class WebhookController {
 
     private final OrderService orderService;
+    private final CheckerService checkerService;
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    @Value("${paystack.secret-key}")
-    private String paystackSecretKey;
+    @Value("${korapay.secret-key}")
+    private String korapaySecretKey;
 
     /**
-     * Must match OrderService.PAYSTACK_CHARGE_RATE. Only used as a FALLBACK
-     * to back a base amount out of the raw charged amount if "baseAmountGhc"
-     * is ever missing from metadata — the normal path always uses the
-     * metadata value directly, since that's the exact figure the customer
-     * agreed to top up.
+     * Must match OrderService.PROCESSING_CHARGE_RATE / CheckerService's
+     * matching constant. Only used as a FALLBACK to back a base amount out
+     * of the raw charged amount if "baseAmountGhc" is ever missing from
+     * metadata — the normal path always uses the metadata value directly.
      */
-    private static final BigDecimal PAYSTACK_CHARGE_RATE = new BigDecimal("0.10");
+    private static final BigDecimal PROCESSING_CHARGE_RATE = new BigDecimal("0.10");
 
     /**
-     * ── RAW-BODY SIGNATURE FIX (2026-07-10) ────────────────────────────────
-     *
-     * Previously this endpoint took @RequestBody Map<String,Object> payload
-     * and isValidSignature() re-serialized that Map back into JSON via
-     * Jackson to compute the HMAC. That re-serialization is NOT guaranteed
-     * to byte-for-byte match what Paystack originally sent and signed:
-     * Jackson can reorder object keys, reformat numbers (e.g. trailing
-     * zeros, scientific notation), or otherwise normalize whitespace/escapes
-     * differently than Paystack's JSON serializer did. Any of that silently
-     * breaks the HMAC comparison and causes 100% legitimate webhooks to fail
-     * signature validation and get a 401 — not a security hole, but a
-     * reliability one (Paystack will retry, but real events can be delayed
-     * or, if retries are exhausted, dropped).
-     *
-     * THE FIX: accept the raw request body as a String and HMAC that exact
-     * byte sequence — precisely what Paystack signed — then parse it into a
-     * Map only afterward, for the rest of the routing/processing logic.
+     * ── CHECKER FEATURE (2026-08-26) ─────────────────────────────────────────
+     * Added a "CHECKER_ORDER" branch to the routing switch below, alongside
+     * the existing WALLET_TOPUP / GUEST_ORDER handling. CHECKER_ORDER
+     * webhooks call checkerService.fulfilCheckerKorapayOrder(reference)
+     * instead of orderService.fulfilKorapayOrder(reference) — everything
+     * else about signature validation and payload parsing is unchanged.
      */
-    @PostMapping("/paystack")
-    @Operation(summary = "Paystack webhook — charge.success handler")
-    public ResponseEntity<Void> handlePaystack(
-            @RequestHeader(value = "x-paystack-signature", required = false) String signature,
+    @PostMapping("/korapay")
+    @Operation(summary = "Korapay webhook — charge.success handler")
+    public ResponseEntity<Void> handleKorapay(
+            @RequestHeader(value = "x-korapay-signature", required = false) String signature,
             @RequestBody String rawBody) {
 
-        // ── STEP 1: Log that we received anything at all ──────────────────────
-        log.info("[WEBHOOK] ✅ Request received at /api/webhooks/paystack");
+        log.info("[WEBHOOK] ✅ Request received at /api/webhooks/korapay");
         log.info("[WEBHOOK] Signature header present: {}", signature != null ? "YES (length=" + signature.length() + ")" : "NO - NULL");
         log.info("[WEBHOOK] Raw body length: {} chars", rawBody != null ? rawBody.length() : 0);
-        log.info("[WEBHOOK] Secret key prefix being used: {}", paystackSecretKey != null ? paystackSecretKey.substring(0, Math.min(12, paystackSecretKey.length())) + "..." : "NULL");
 
-        // ── STEP 2: Signature validation — hash the RAW bytes Paystack sent ────
+        JsonNode root = parsePayload(rawBody);
+        if (root == null) {
+            log.warn("[WEBHOOK] ❌ Body was not valid JSON — returning 400");
+            return ResponseEntity.badRequest().build();
+        }
+
+        JsonNode dataNode = root.get("data");
+        if (dataNode == null || dataNode.isMissingNode()) {
+            log.warn("[WEBHOOK] ❌ 'data' field missing from payload — returning 400");
+            return ResponseEntity.badRequest().build();
+        }
+
         log.info("[WEBHOOK] Starting signature validation...");
-        boolean signatureValid = isValidSignature(rawBody, signature);
+        boolean signatureValid = isValidSignature(dataNode, signature);
         log.info("[WEBHOOK] Signature valid: {}", signatureValid);
 
         if (!signatureValid) {
             log.warn("[WEBHOOK] ❌ Signature validation FAILED — returning 401");
-            log.warn("[WEBHOOK] Received signature: {}", signature);
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
         log.info("[WEBHOOK] ✅ Signature validation passed");
 
-        // ── STEP 3: Parse the body now that the signature is verified ─────────
-        Map<String, Object> payload = parsePayload(rawBody);
-        if (payload == null) {
-            log.warn("[WEBHOOK] ❌ Body was not valid JSON — returning 400");
-            return ResponseEntity.badRequest().build();
-        }
-        log.info("[WEBHOOK] Raw payload keys: {}", payload.keySet());
-
-        // ── STEP 4: Extract event type ────────────────────────────────────────
-        String event = (String) payload.get("event");
+        String event = root.path("event").asText();
         log.info("[WEBHOOK] Event type: {}", event);
 
         if (!"charge.success".equals(event)) {
@@ -104,15 +94,9 @@ public class WebhookController {
             return ResponseEntity.ok().build();
         }
 
-        // ── STEP 5: Extract data block ────────────────────────────────────────
-        Map<String, Object> data = extractData(payload);
-        if (data == null) {
-            log.warn("[WEBHOOK] ❌ 'data' field missing from payload — returning 400");
-            return ResponseEntity.badRequest().build();
-        }
+        Map<String, Object> data = MAPPER.convertValue(dataNode, Map.class);
         log.info("[WEBHOOK] Data block keys: {}", data.keySet());
 
-        // ── STEP 6: Extract reference ─────────────────────────────────────────
         String reference = (String) data.get("reference");
         log.info("[WEBHOOK] Reference: {}", reference);
         if (reference == null || reference.isBlank()) {
@@ -120,17 +104,14 @@ public class WebhookController {
             return ResponseEntity.badRequest().build();
         }
 
-        // ── STEP 7: Extract metadata ──────────────────────────────────────────
         Map<String, Object> meta = extractMeta(data);
         log.info("[WEBHOOK] Metadata present: {}", meta != null ? "YES, keys=" + meta.keySet() : "NO - NULL");
         String type = meta != null ? (String) meta.get("type") : null;
         log.info("[WEBHOOK] Transaction type from metadata: {}", type);
 
-        // ── STEP 8: Extract amount ────────────────────────────────────────────
         Object rawAmount = data.get("amount");
-        log.info("[WEBHOOK] Raw amount from Paystack: {}", rawAmount);
+        log.info("[WEBHOOK] Raw amount from Korapay: {}", rawAmount);
 
-        // ── STEP 9: Route and process ─────────────────────────────────────────
         log.info("[WEBHOOK] Routing: ref={} type={}", reference, type);
         try {
             if ("WALLET_TOPUP".equals(type)) {
@@ -138,10 +119,6 @@ public class WebhookController {
                 log.info("[WEBHOOK] userId from metadata: {}", userIdStr);
                 UUID userId = UUID.fromString(userIdStr);
 
-                // IMPORTANT: the customer was charged base × 1.10 via Paystack.
-                // We must credit the wallet with the BASE amount (what they
-                // asked to top up), not the raw charged amount — otherwise
-                // they get a free 10% bonus on every top-up.
                 BigDecimal chargedAmountGhc = extractAmountGhc(data);
                 BigDecimal baseAmountGhc = extractBaseAmountGhc(meta, chargedAmountGhc, reference);
 
@@ -154,8 +131,13 @@ public class WebhookController {
 
             } else if ("GUEST_ORDER".equals(type)) {
                 log.info("[WEBHOOK] Processing GUEST_ORDER: ref={}", reference);
-                orderService.fulfilPaystackOrder(reference);
+                orderService.fulfilKorapayOrder(reference);
                 log.info("[WEBHOOK] ✅ GUEST_ORDER fulfilled: ref={}", reference);
+
+            } else if ("CHECKER_ORDER".equals(type)) {
+                log.info("[WEBHOOK] Processing CHECKER_ORDER: ref={}", reference);
+                checkerService.fulfilCheckerKorapayOrder(reference);
+                log.info("[WEBHOOK] ✅ CHECKER_ORDER fulfilled: ref={}", reference);
 
             } else {
                 log.warn("[WEBHOOK] ⚠️ Unknown or null transaction type='{}' ref={} — ignoring", type, reference);
@@ -165,39 +147,26 @@ public class WebhookController {
             log.error("[WEBHOOK] ❌ Processing error: ref={} type={} error={}", reference, type, ex.getMessage(), ex);
         }
 
-        log.info("[WEBHOOK] ✅ Returning 200 to Paystack for ref={}", reference);
+        log.info("[WEBHOOK] ✅ Returning 200 to Korapay for ref={}", reference);
         return ResponseEntity.ok().build();
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    /**
-     * Hashes the EXACT raw request body Paystack sent — no re-serialization,
-     * no Jackson round-trip — so the HMAC is computed over precisely the
-     * bytes Paystack signed.
-     */
-    private boolean isValidSignature(String rawBody, String signature) {
+    private boolean isValidSignature(JsonNode dataNode, String signature) {
         if (signature == null || signature.isBlank()) {
             log.warn("[WEBHOOK-SIG] ❌ Signature is null or blank");
             return false;
         }
-        if (rawBody == null) {
-            log.warn("[WEBHOOK-SIG] ❌ Raw body is null");
-            return false;
-        }
         try {
-            Mac mac = Mac.getInstance("HmacSHA512");
+            String dataJson = MAPPER.writeValueAsString(dataNode);
+
+            Mac mac = Mac.getInstance("HmacSHA256");
             mac.init(new SecretKeySpec(
-                    paystackSecretKey.getBytes(StandardCharsets.UTF_8), "HmacSHA512"));
+                    korapaySecretKey.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
 
-            log.debug("[WEBHOOK-SIG] Raw body used for HMAC (first 200 chars): {}",
-                    rawBody.length() > 200 ? rawBody.substring(0, 200) + "..." : rawBody);
-
-            byte[] hash = mac.doFinal(rawBody.getBytes(StandardCharsets.UTF_8));
+            byte[] hash = mac.doFinal(dataJson.getBytes(StandardCharsets.UTF_8));
             String computed = HexFormat.of().formatHex(hash);
-
-            log.info("[WEBHOOK-SIG] Computed HMAC (first 20 chars): {}...", computed.substring(0, 20));
-            log.info("[WEBHOOK-SIG] Received signature (first 20 chars): {}...", signature.substring(0, Math.min(20, signature.length())));
 
             boolean match = computed.equalsIgnoreCase(signature);
             log.info("[WEBHOOK-SIG] HMAC match: {}", match);
@@ -209,20 +178,13 @@ public class WebhookController {
         }
     }
 
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> parsePayload(String rawBody) {
+    private JsonNode parsePayload(String rawBody) {
         try {
-            return MAPPER.readValue(rawBody, Map.class);
+            return MAPPER.readTree(rawBody);
         } catch (Exception ex) {
             log.error("[WEBHOOK] ❌ Failed to parse raw body as JSON: {}", ex.getMessage(), ex);
             return null;
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> extractData(Map<String, Object> payload) {
-        Object data = payload.get("data");
-        return (data instanceof Map) ? (Map<String, Object>) data : null;
     }
 
     @SuppressWarnings("unchecked")
@@ -237,21 +199,9 @@ public class WebhookController {
             log.warn("[WEBHOOK] Amount is null, defaulting to 0");
             return BigDecimal.ZERO;
         }
-        BigDecimal result = new BigDecimal(raw.toString()).divide(BigDecimal.valueOf(100));
-        log.info("[WEBHOOK] Amount converted: {}pesewas → GHS{}", raw, result);
-        return result;
+        return new BigDecimal(raw.toString()).setScale(2, RoundingMode.HALF_UP);
     }
 
-    /**
-     * Reads the ORIGINAL top-up amount the customer requested (before the
-     * 10% Paystack processing charge) from metadata.baseAmountGhc, which
-     * OrderService.initiateTopUp() stashed there at initiation time.
-     *
-     * Falls back to backing it out of the charged amount only if metadata
-     * is somehow missing it — this should never happen in normal operation
-     * and is logged loudly if it does, since it means initiateTopUp()
-     * and this webhook have drifted out of sync.
-     */
     private BigDecimal extractBaseAmountGhc(Map<String, Object> meta,
                                             BigDecimal chargedAmountGhc,
                                             String reference) {
@@ -270,6 +220,6 @@ public class WebhookController {
         }
 
         return chargedAmountGhc
-                .divide(BigDecimal.ONE.add(PAYSTACK_CHARGE_RATE), 2, RoundingMode.HALF_UP);
+                .divide(BigDecimal.ONE.add(PROCESSING_CHARGE_RATE), 2, RoundingMode.HALF_UP);
     }
 }

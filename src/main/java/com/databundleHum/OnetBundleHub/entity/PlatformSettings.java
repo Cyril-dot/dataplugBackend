@@ -12,6 +12,22 @@ import java.time.Instant;
  *
  * One row = one (network, capacity_gb) combination.
  * setting_key is auto-derived as "{NETWORK}_{GB}GB" — e.g. "MTN_1GB"
+ *
+ * ── DATAPRIMO INTEGRATION (2026-08-26) ────────────────────────────────────
+ * dataprimoProductId / dataprimoNetwork identify this exact bundle in
+ * DataPrimo's catalog (GET /catalog). Unlike Big Dreams, DataPrimo has no
+ * fixed/predictable network vocabulary that can be hardcoded in Java — the
+ * only source of truth is a real catalog response for this account. These
+ * two columns must be populated manually (or via an admin tool) by matching
+ * this row's network/capacityGb against a real GET /catalog response, before
+ * DataPrimoService.purchase(...) can be called for this bundle.
+ *
+ * NOTE: if a network ever has multiple product tiers at the same capacity
+ * (e.g. "MTN" standard vs "MTN Express"), this schema as written can only
+ * represent ONE of them per (network, capacity_gb) row — see the
+ * product-variant discussion before adding Express-style bundles. A
+ * dedicated product_variant column + relaxed unique constraint would be
+ * needed to support both tiers as separate purchasable options.
  */
 @Entity
 @Table(
@@ -72,6 +88,22 @@ public class PlatformSettings {
     @Column(name = "is_active", nullable = false)
     @Builder.Default
     private boolean active = true;
+
+    /**
+     * DataPrimo catalog productId for this exact bundle. Nullable so
+     * existing rows don't break — but purchase() will fail loudly for any
+     * bundle where this hasn't been set. Resolve by matching this row's
+     * network/capacityGb against GET /catalog and filling this in manually.
+     */
+    @Column(name = "dataprimo_product_id", length = 100)
+    private String dataprimoProductId;
+
+    /**
+     * DataPrimo network string for this bundle (catalog-defined, not
+     * necessarily the same string as our internal Network enum name).
+     */
+    @Column(name = "dataprimo_network", length = 50)
+    private String dataprimoNetwork;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     @Builder.Default

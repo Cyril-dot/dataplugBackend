@@ -12,51 +12,58 @@ import java.math.RoundingMode;
 import java.util.UUID;
 
 /**
- * Processes inbound Paystack webhook events.
+ * Processes inbound Korapay webhook events.
  *
- * Called from WebhookController AFTER HMAC-SHA512 signature has been validated.
+ * Called from WebhookController AFTER HMAC-SHA256 signature has been
+ * validated (Korapay signs only the "data" object of the payload — see
+ * KorapayService.isWebhookSignatureValid).
  *
  * Supported events:
- *   charge.success  → WALLET_TOPUP | GUEST_ORDER | RESELLER_FEE
- *   charge.failed   → mark order FAILED
+ *   charge.success   → WALLET_TOPUP | GUEST_ORDER | CHECKER_ORDER | RESELLER_FEE
+ *   charge.failed    → mark order FAILED
  *   transfer.success → (Phase 4) automated payout confirmation
+ *   transfer.failed  → (Phase 4) automated payout failure
+ *   refund.success   → (not yet wired) refund confirmation
+ *   refund.failed    → (not yet wired) refund failure
  *
- * The "metadata.type" field in the Paystack transaction determines which flow to run.
- * This metadata is set during transaction initialisation in OrderService / ResellerService.
+ * ── CHECKER FEATURE (2026-08-26) ──────────────────────────────────────────
+ * Added CHECKER_ORDER routing to handleChargeSuccess() alongside the
+ * existing WALLET_TOPUP / GUEST_ORDER branches — calls
+ * checkerService.fulfilCheckerKorapayOrder(reference).
  *
- * PAYSTACK PROCESSING CHARGE: WALLET_TOPUP transactions are charged the
- * customer's requested amount × 1.10 (see OrderService.initiateTopUp). The
- * wallet must only ever be credited the ORIGINAL requested amount, read from
- * metadata.baseAmountGhc — never the raw amount Paystack reports as paid.
+ * NOTE: WebhookController implements this exact same routing logic inline
+ * rather than delegating to this service (a pre-existing duplication, not
+ * introduced by this change — see earlier discussion). Keep both in sync
+ * if you touch one.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class WebhookService {
 
-    /** Must match OrderService.PAYSTACK_CHARGE_RATE — used only as a fallback. */
-    private static final BigDecimal PAYSTACK_CHARGE_RATE = new BigDecimal("0.10");
+    /** Must match OrderService.PROCESSING_CHARGE_RATE — used only as a fallback. */
+    private static final BigDecimal PROCESSING_CHARGE_RATE = new BigDecimal("0.10");
 
     private final OrderService   orderService;
+    private final CheckerService checkerService;
     private final UserRepository userRepository;
     private final ObjectMapper   objectMapper;
 
-    /**
-     * Entry point — called with the raw parsed JSON node from the Paystack webhook body.
-     */
     public void handle(JsonNode root) {
         String event = root.path("event").asText();
-        log.info("Paystack webhook received: event={}", event);
+        log.info("Korapay webhook received: event={}", event);
 
         switch (event) {
             case "charge.success"   -> handleChargeSuccess(root.path("data"));
             case "charge.failed"    -> handleChargeFailed(root.path("data"));
             case "transfer.success" -> handleTransferSuccess(root.path("data"));
-            default                 -> log.debug("Unhandled Paystack event: {}", event);
+            case "transfer.failed"  -> handleTransferFailed(root.path("data"));
+            case "refund.success", "refund.failed" ->
+                    log.info("Korapay refund event received (not yet wired): event={} ref={}",
+                            event, root.path("data").path("reference").asText());
+            default -> log.debug("Unhandled Korapay event: {}", event);
         }
     }
-
-    // ── charge.success ────────────────────────────────────────────────────────
 
     private void handleChargeSuccess(JsonNode data) {
         String reference = data.path("reference").asText();
@@ -70,8 +77,6 @@ public class WebhookService {
                 UUID userId = parseUserId(userIdStr, reference);
                 if (userId == null) return;
 
-                // Customer was charged base × 1.10. Credit only the base
-                // amount they originally asked to top up.
                 BigDecimal chargedAmountGhc = extractAmountGhc(data);
                 BigDecimal baseAmountGhc    = extractBaseAmountGhc(data, chargedAmountGhc, reference);
 
@@ -79,53 +84,46 @@ public class WebhookService {
             }
 
             case "GUEST_ORDER" ->
-                // The order was already persisted during initiation — just fulfil it.
-                    orderService.fulfilPaystackOrder(reference);
+                    orderService.fulfilKorapayOrder(reference);
+
+            case "CHECKER_ORDER" ->
+                    checkerService.fulfilCheckerKorapayOrder(reference);
 
             case "RESELLER_FEE" ->
-                // Registration fee paid via Paystack instead of wallet debit.
-                // ResellerProfile already created as PENDING — nothing more to do here.
-                    log.info("Reseller registration fee confirmed via Paystack: ref={}", reference);
+                    log.info("Reseller registration fee confirmed via Korapay: ref={}", reference);
 
             default -> {
                 log.warn("charge.success with unknown metadata.type='{}' ref={}", type, reference);
                 if (type.isBlank()) {
-                    orderService.fulfilPaystackOrder(reference);
+                    orderService.fulfilKorapayOrder(reference);
                 }
             }
         }
     }
 
-    // ── charge.failed ─────────────────────────────────────────────────────────
-
     private void handleChargeFailed(JsonNode data) {
         String reference = data.path("reference").asText();
         log.warn("charge.failed: ref={}", reference);
-        // PENDING orders that never receive a success event are timed out
-        // to FAILED by the background poller. No explicit action needed here.
     }
-
-    // ── transfer.success (Phase 4 — automated payouts) ────────────────────────
 
     private void handleTransferSuccess(JsonNode data) {
-        String transferCode = data.path("transfer_code").asText();
-        log.info("transfer.success: transferCode={} (Phase 4 — not yet implemented)", transferCode);
-        // Phase 4: look up Payout by transfer_code, mark as PAID.
+        String reference = data.path("reference").asText();
+        log.info("transfer.success: ref={} (Phase 4 — not yet implemented)", reference);
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
+    private void handleTransferFailed(JsonNode data) {
+        String reference = data.path("reference").asText();
+        log.warn("transfer.failed: ref={} (Phase 4 — not yet implemented)", reference);
+    }
 
     private BigDecimal extractAmountGhc(JsonNode data) {
-        long pesewas = data.path("amount").asLong(0);
-        return BigDecimal.valueOf(pesewas).movePointLeft(2); // pesewas → GHS
+        JsonNode amountNode = data.path("amount");
+        if (amountNode.isNumber()) {
+            return amountNode.decimalValue().setScale(2, RoundingMode.HALF_UP);
+        }
+        return new BigDecimal(amountNode.asText("0")).setScale(2, RoundingMode.HALF_UP);
     }
 
-    /**
-     * Reads metadata.baseAmountGhc (the amount the customer originally asked
-     * to top up, before the 10% charge). Falls back to back-calculating from
-     * the charged amount if it's ever missing, with a loud warning — that
-     * should never happen if OrderService.initiateTopUp() is in sync.
-     */
     private BigDecimal extractBaseAmountGhc(JsonNode data, BigDecimal chargedAmountGhc, String reference) {
         JsonNode baseNode = data.path("metadata").path("baseAmountGhc");
         if (!baseNode.isMissingNode() && !baseNode.asText("").isBlank()) {
@@ -141,14 +139,14 @@ public class WebhookService {
         }
 
         return chargedAmountGhc
-                .divide(BigDecimal.ONE.add(PAYSTACK_CHARGE_RATE), 2, RoundingMode.HALF_UP);
+                .divide(BigDecimal.ONE.add(PROCESSING_CHARGE_RATE), 2, RoundingMode.HALF_UP);
     }
 
     private UUID parseUserId(String userIdStr, String reference) {
         try {
-            return UUID.fromString(userIdStr);  // ← was UUID.parseLong(), which doesn't exist
+            return UUID.fromString(userIdStr);
         } catch (IllegalArgumentException ex) {
-            log.error("Invalid userId in Paystack metadata: userId='{}' ref={}", userIdStr, reference);
+            log.error("Invalid userId in Korapay metadata: userId='{}' ref={}", userIdStr, reference);
             return null;
         }
     }
