@@ -58,7 +58,7 @@ public class SecurityConfig {
     private final UserDetailsService userDetailsService;
     private final ObjectMapper       objectMapper;
 
-    @Value("${app.cors.allowed-origins:http://localhost:3000,http://localhost:5173,https://data-bay-gh.vercel.app,https://databaygh.shop,https://www.databaygh.shop}")
+    @Value("${app.cors.allowed-origins:http://localhost:3000,http://localhost:4028,http://localhost:5173,https://data-bay-gh.vercel.app,https://databaygh.shop,https://www.databaygh.shop,https://datapack-lac.vercel.app,https://cosigner-mold-april.ngrok-free.dev}")
     private String allowedOrigins;
 
     @Bean
@@ -206,7 +206,7 @@ public class SecurityConfig {
         configuration.setAllowedMethods(
                 List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(
-                List.of("Authorization", "Content-Type", "Accept", "x-paystack-signature"));
+                List.of("Authorization", "Content-Type", "Accept", "x-paystack-signature", "ngrok-skip-browser-warning"));
         configuration.setAllowCredentials(true);
         configuration.setMaxAge(3600L);
 

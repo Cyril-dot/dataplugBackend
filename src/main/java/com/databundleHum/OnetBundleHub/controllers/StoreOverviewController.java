@@ -37,7 +37,7 @@ public class StoreOverviewController {
             @AuthenticationPrincipal UUID resellerId) {
         log.info("[STORE-OVERVIEW] Self-view requested: resellerId={}", resellerId);
 
-        ResellerProfile profile = resellerProfileRepository.findByUserId(resellerId)
+        ResellerProfile profile = resellerProfileRepository.findByUser_Id(resellerId)
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "No reseller profile found for userId=" + resellerId));
 

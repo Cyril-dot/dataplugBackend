@@ -14,6 +14,8 @@ public interface ResellerProfileRepository extends JpaRepository<ResellerProfile
 
     Optional<ResellerProfile> findByUser(User user);
 
+    Optional<ResellerProfile> findByUser_Id(UUID userId);
+
     Page<ResellerProfile> findByStatus(ResellerProfile.ResellerStatus status, Pageable pageable);
 
     long countByStatus(ResellerProfile.ResellerStatus status);

@@ -1,6 +1,7 @@
 package com.databundleHum.OnetBundleHub.repos;
 
 import com.databundleHum.OnetBundleHub.entity.CheckerOrder;
+import com.databundleHum.OnetBundleHub.entity.CheckerPricing;
 import com.databundleHum.OnetBundleHub.entity.User;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -17,6 +18,6 @@ public interface CheckerOrderRepository extends JpaRepository<CheckerOrder, Long
     Page<CheckerOrder> findByUserOrderByCreatedAtDesc(User user, Pageable pageable);
 
     boolean existsByUserIdAndPhoneNumberAndExamTypeAndStatusNotAndCreatedAtAfter(
-            UUID userId, String phoneNumber, CheckerOrder.CheckerOrderStatus notStatus,
-            LocalDateTime createdAfter);
+            UUID userId, String phoneNumber, CheckerPricing.ExamType examType,
+            CheckerOrder.CheckerOrderStatus notStatus, LocalDateTime createdAfter);
 }
