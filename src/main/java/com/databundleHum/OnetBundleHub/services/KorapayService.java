@@ -13,6 +13,7 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.util.HexFormat;
 import java.util.Map;
@@ -56,8 +57,21 @@ public class KorapayService {
                 "name",  customerName != null ? customerName : email
         );
 
+        // ✅ FIXED: Korapay's own docs (developers.korapay.com/docs/checkout-redirect)
+        // declare "amount" as type Integer, and every real example in their
+        // docs is a bare whole number (e.g. 701, 50000) — never a decimal.
+        // The previous code sent amountGhc (a BigDecimal with a fixed
+        // 2-decimal scale, e.g. "20.00") directly, which Jackson serializes
+        // WITH the decimal point — failing Korapay's integer schema
+        // validation on every single call, which is exactly why every
+        // charge attempt was rejected with a 422. Amounts ARE still in the
+        // base/major currency unit (GHS, not pesewas) — that part of the
+        // original comment was correct and confirmed by Korapay's docs —
+        // only the numeric TYPE was wrong, not the unit.
+        long amountAsInteger = amountGhc.setScale(0, RoundingMode.HALF_UP).longValueExact();
+
         Map<String, Object> payload = Map.of(
-                "amount",       amountGhc,          // major unit, no conversion
+                "amount",       amountAsInteger,
                 "currency",     "GHS",
                 "reference",    reference,
                 "redirect_url", redirectUrl != null ? redirectUrl : "",
@@ -65,8 +79,8 @@ public class KorapayService {
                 "metadata",     metadata != null ? metadata : Map.of()
         );
 
-        log.info("[KORAPAY] Initiate: ref={} email={} customerName={} amountGhc={} redirectUrl={}",
-                reference, email, customerName, amountGhc, redirectUrl);
+        log.info("[KORAPAY] Initiate: ref={} email={} customerName={} amountGhc={} amountAsInteger={} redirectUrl={}",
+                reference, email, customerName, amountGhc, amountAsInteger, redirectUrl);
 
         try {
             Map<String, Object> response = korapayWebClient.post()
