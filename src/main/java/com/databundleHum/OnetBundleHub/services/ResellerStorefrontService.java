@@ -50,7 +50,7 @@ import java.util.stream.Collectors;
  *   - initiateGuestStorefrontCheckerOrder / fulfilStorefrontCheckerKorapayOrder /
  *     placeWalletStorefrontCheckerOrder mirror the bundle equivalents exactly,
  *     but delegate the actual DataBossHub purchase to
- *     CheckerService.purchaseFromDataBossHub(order) — the same shared method
+ *     CheckerService.provisionFromStock(order) — the same shared method
  *     CheckerService itself uses for guest/wallet checker orders, so slot-
  *     contention retry logic lives in exactly one place.
  *   - getStoreOverview() is NEW — a single combined "everything about this
@@ -366,7 +366,7 @@ public class ResellerStorefrontService {
         log.info("[STOREFRONT] Korapay checker order VERIFIED: orderId={} ref={}", order.getId(), reference);
 
         try {
-            checkerService.purchaseFromDataBossHub(order);
+            checkerService.provisionFromStock(order);
             notificationService.sendCheckerCredentialsSms(
                     order.getPhoneNumber(), order.getExamType().name(),
                     order.getSerial(), order.getPin(), order.getResultsLink());
@@ -428,7 +428,7 @@ public class ResellerStorefrontService {
                 slug, customerId, order.getId(), sellingPrice);
 
         try {
-            checkerService.purchaseFromDataBossHub(order);
+            checkerService.provisionFromStock(order);
             notificationService.sendCheckerCredentialsSms(
                     order.getPhoneNumber(), order.getExamType().name(),
                     order.getSerial(), order.getPin(), order.getResultsLink());

@@ -38,7 +38,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/admin/bundles")
 @RequiredArgsConstructor
-@PreAuthorize("hasRole('ADMIN')")  // protect it — admin only
+@PreAuthorize("hasRole('SUPER_ADMIN')")  // ✅ FIXED: was hasRole('ADMIN') — role is ROLE_SUPER_ADMIN
 public class AdminBundleController {
 
     private final DataPrimoService dataPrimoService;

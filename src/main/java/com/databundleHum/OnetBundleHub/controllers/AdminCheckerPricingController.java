@@ -25,7 +25,7 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/admin/checker-pricing")
 @RequiredArgsConstructor
-@PreAuthorize("hasRole('ADMIN')")
+@PreAuthorize("hasRole('SUPER_ADMIN')")  // ✅ FIXED: was hasRole('ADMIN') — role is ROLE_SUPER_ADMIN
 public class AdminCheckerPricingController {
 
     private final CheckerPricingRepository checkerPricingRepository;

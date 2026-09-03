@@ -3,6 +3,7 @@ package com.databundleHum.OnetBundleHub.entity;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.UuidGenerator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -64,6 +65,14 @@ public class User {
     private String phone;
 
     @Column(name = "password_hash", nullable = false)
+    // ✅ SECURITY FIX: without this, any endpoint that ever accidentally
+    // serializes a User entity directly (instead of a DTO) leaks the bcrypt
+    // hash in the JSON response — found via ResellerCheckerPricingController
+    // returning raw CheckerResellerPricing entities with a loaded User
+    // nested inside. This is defense-in-depth: the specific endpoint is
+    // also fixed to use a proper DTO, but this protects every other
+    // current and future spot too.
+    @JsonIgnore
     private String passwordHash;
 
     @Enumerated(EnumType.STRING)

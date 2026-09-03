@@ -127,6 +127,11 @@ public class SecurityConfig {
                         // isAuthenticated() since it resolves reseller-specific pricing.
                         .requestMatchers(HttpMethod.GET, "/api/v1/pricing/public").permitAll()
 
+                        // Checker (BECE/WASSCE) equivalent of the above — same reasoning,
+                        // publicPriceGhc only, never reseller cost. See
+                        // CheckerPublicPricingResponse's Javadoc.
+                        .requestMatchers(HttpMethod.GET, "/api/checkers/pricing").permitAll()
+
                         // ── Public order status + guest checkout ─────────────────────
                         .requestMatchers(HttpMethod.GET,  "/api/v1/orders/status").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/orders/guest").permitAll()

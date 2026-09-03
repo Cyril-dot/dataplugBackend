@@ -3,13 +3,16 @@ package com.databundleHum.OnetBundleHub.services;
 import com.databundleHum.OnetBundleHub.dtos.CheckerWalletRequest;
 import com.databundleHum.OnetBundleHub.dtos.InitiateGuestCheckerOrderRequest;
 import com.databundleHum.OnetBundleHub.dtos.response.CheckerOrderResponse;
+import com.databundleHum.OnetBundleHub.dtos.response.CheckerPublicPricingResponse;
 import com.databundleHum.OnetBundleHub.dtos.response.InitiateCheckerOrderResponse;
 import com.databundleHum.OnetBundleHub.entity.CheckerOrder;
 import com.databundleHum.OnetBundleHub.entity.CheckerPricing;
+import com.databundleHum.OnetBundleHub.entity.CheckerStock;
 import com.databundleHum.OnetBundleHub.entity.User;
 import com.databundleHum.OnetBundleHub.entity.WalletTransaction.TransactionType;
 import com.databundleHum.OnetBundleHub.repos.CheckerOrderRepository;
 import com.databundleHum.OnetBundleHub.repos.CheckerPricingRepository;
+import com.databundleHum.OnetBundleHub.repos.CheckerStockRepository;
 import com.databundleHum.OnetBundleHub.repos.UserRepository;
 import com.databundleHum.OnetBundleHub.security.BundleNotFoundException;
 import com.databundleHum.OnetBundleHub.security.DuplicateOrderException;
@@ -19,6 +22,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -34,7 +38,7 @@ import java.util.UUID;
 
 /**
  * Handles result-checker (BECE/WASSCE) purchase flows:
- *  - Guest checkout  (Korapay Checkout Redirect → webhook → DataBossHub provision)
+ *  - Guest checkout  (Korapay Checkout Redirect → webhook → stock provision)
  *  - User wallet purchase (synchronous — no webhook needed)
  *  - Purchase history
  *
@@ -43,19 +47,23 @@ import java.util.UUID;
  * is a FRESH entity/flow with no legacy Paystack naming — CheckerOrder uses
  * gatewayRef / KORAPAY from day one.
  *
+ * ── Stock model (replaces the old live DataBossHub purchase) ────────────
+ * Checker purchase used to call DataBossHub live, claiming one of its
+ * finite numbered slots at the moment a customer paid. That's been
+ * replaced with an admin-managed stock model: the Super Admin pre-acquires
+ * a batch of checker credentials — manually pasted in, or bought in bulk
+ * via DataBossHub or Big Dreams Data through AdminCheckerStockController —
+ * and provisionFromStock() below just claims the next unused row from our
+ * own database. No live upstream call happens at customer-purchase time
+ * any more; if stock is empty, the purchase fails immediately with a clear
+ * "out of stock" error instead of hitting a third-party API.
+ *
  * ── Why wallet checker purchase is simpler than wallet bundle purchase ────
  * OrderService's placeWalletOrder() must call out to DataPrimo (fire-and-
- * forget, needs a poller to confirm delivery later). DataBossHub's checker
- * purchase is synchronous — buyCheckerSlot() returns credentials or fails
- * in the same call. So purchaseCheckerWallet() below debits the wallet,
- * buys the checker, and returns the result to the caller in one request —
- * no PENDING-then-poll cycle, no @Scheduled job needed for checkers.
- *
- * ── Slot contention retry ──────────────────────────────────────────────────
- * purchaseFromDataBossHub() re-fetches the slot list and tries a different
- * id on failure, up to MAX_SLOT_ATTEMPTS times, since DataBossHub's slots
- * are a shared finite pool that can be claimed by someone else between our
- * fetch and our buy call.
+ * forget, needs a poller to confirm delivery later). Stock provisioning is
+ * synchronous and local — purchaseCheckerWallet() below debits the wallet,
+ * claims a stock row, and returns the result in one request — no
+ * PENDING-then-poll cycle, no @Scheduled job needed for checkers.
  */
 @Slf4j
 @Service
@@ -63,7 +71,6 @@ import java.util.UUID;
 public class CheckerService {
 
     private static final int DUPLICATE_WINDOW_SECONDS = 30;
-    private static final int MAX_SLOT_ATTEMPTS = 3;
 
     /** Must match OrderService.PROCESSING_CHARGE_RATE for consistency across products. */
     private static final BigDecimal PROCESSING_CHARGE_RATE = new BigDecimal("0.10");
@@ -72,10 +79,10 @@ public class CheckerService {
 
     private final CheckerOrderRepository     checkerOrderRepository;
     private final CheckerPricingRepository   checkerPricingRepository;
+    private final CheckerStockRepository     checkerStockRepository;
     private final UserRepository             userRepository;
     private final WalletService              walletService;
     private final KorapayService             korapayService;
-    private final DataBossHubService         dataBossHubService;
     private final NotificationService        notificationService;
     private final com.databundleHum.OnetBundleHub.config.AppConfig appConfig;
 
@@ -147,10 +154,10 @@ public class CheckerService {
         CheckerOrder order = markCheckerOrderVerified(reference);
 
         try {
-            purchaseFromDataBossHub(order);
+            provisionFromStock(order);
             deliverCredentials(order);
         } catch (UpstreamApiException ex) {
-            log.error("[CHECKER] DataBossHub provision failed after Korapay payment: orderId={} ref={} error={}",
+            log.error("[CHECKER] Stock provisioning failed after Korapay payment: orderId={} ref={} error={}",
                     order.getId(), reference, ex.getMessage());
             markCheckerOrderFailed(order.getId(), ex.getMessage());
         }
@@ -214,7 +221,7 @@ public class CheckerService {
         }
 
         try {
-            purchaseFromDataBossHub(order);
+            provisionFromStock(order);
             deliverCredentials(order);
         } catch (UpstreamApiException ex) {
             handleWalletProvisioningFailure(order.getId(), user, price, ex);
@@ -239,90 +246,55 @@ public class CheckerService {
                 orderId, user.getId(), price, ex.getMessage());
     }
 
-    // ── Shared DataBossHub provisioning (used by guest, wallet, storefront) ──
+    // ── Shared stock provisioning (used by guest, wallet, storefront) ────────
 
     /**
-     * Buys a checker from DataBossHub for this order's exam type, retrying
-     * against a freshly re-fetched slot list on contention, and persists
-     * the result onto the order (COMPLETED with credentials, or throws).
+     * Claims the oldest unused CheckerStock row for this order's exam type
+     * (pessimistic row lock — see CheckerStockRepository.findAvailableForUpdate),
+     * marks it consumed, and copies its credentials onto the order as
+     * COMPLETED. Throws UpstreamApiException if stock is empty — same
+     * exception type the old DataBossHub path used, so every existing
+     * catch site (guest webhook fulfilment, wallet purchase, storefront
+     * checker orders) keeps working unchanged, including wallet refund
+     * logic on failure.
      *
      * Public so ResellerStorefrontService can reuse this exact logic for
      * storefront checker orders, mirroring how it calls
      * dataPrimoService.purchase(order, productId, network) for bundles.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void purchaseFromDataBossHub(CheckerOrder order) {
-        log.info("[CHECKER] purchaseFromDataBossHub: orderId={} examType={}", order.getId(), order.getExamType());
+    public void provisionFromStock(CheckerOrder order) {
+        log.info("[CHECKER] provisionFromStock: orderId={} examType={}", order.getId(), order.getExamType());
 
-        CheckerPricing pricing = getActivePricing(order.getExamType());
-        String category = pricing.getDataBossHubCategory();
-        if (category == null || category.isBlank()) {
-            log.error("[CHECKER] No DataBossHub category configured for examType={} — orderId={}",
+        List<CheckerStock> available = checkerStockRepository.findAvailableForUpdate(
+                order.getExamType(), PageRequest.of(0, 1));
+
+        if (available.isEmpty()) {
+            log.error("[CHECKER] Out of stock — no available checker codes for examType={} — orderId={}",
                     order.getExamType(), order.getId());
+            markCheckerOrderFailed(order.getId(),
+                    "Out of stock — no checker codes available for " + order.getExamType()
+                            + ". An admin needs to restock.");
             throw new UpstreamApiException(
-                    "CheckerPricing for examType=" + order.getExamType()
-                            + " has no dataBossHubCategory configured — cannot provision orderId=" + order.getId());
+                    "No checker stock available for examType=" + order.getExamType()
+                            + " — orderId=" + order.getId());
         }
 
-        UpstreamApiException lastException = null;
+        CheckerStock stock = available.get(0);
+        stock.setUsed(true);
+        stock.setUsedAt(LocalDateTime.now());
+        stock.setCheckerOrderId(order.getId());
+        checkerStockRepository.save(stock);
 
-        for (int attempt = 1; attempt <= MAX_SLOT_ATTEMPTS; attempt++) {
-            log.info("[CHECKER] Slot attempt {}/{} — orderId={} category={}",
-                    attempt, MAX_SLOT_ATTEMPTS, order.getId(), category);
+        order.setSerial(stock.getSerial());
+        order.setPin(stock.getPin());
+        order.setExamDate(stock.getExamDate());
+        order.setResultsLink(stock.getResultsLink());
+        order.setStatus(CheckerOrder.CheckerOrderStatus.COMPLETED);
+        checkerOrderRepository.save(order);
 
-            List<Map<String, Object>> slots = dataBossHubService.fetchAvailableSlots(category);
-            if (slots.isEmpty()) {
-                log.error("[CHECKER] No available DataBossHub slots for category={} — orderId={}",
-                        category, order.getId());
-                throw new UpstreamApiException(
-                        "No available checker slots for category=" + category
-                                + " — orderId=" + order.getId());
-            }
-
-            String slotId = dataBossHubService.extractSlotId(slots.get(0));
-            if (slotId == null) {
-                log.error("[CHECKER] Could not extract slot id from DataBossHub response — orderId={}",
-                        order.getId());
-                throw new UpstreamApiException(
-                        "DataBossHub slot list entry had no extractable id — orderId=" + order.getId());
-            }
-
-            try {
-                Map<String, Object> credentialsRaw = dataBossHubService.buyCheckerSlot(slotId);
-                DataBossHubService.CheckerCredentials creds =
-                        dataBossHubService.extractCheckerFields(credentialsRaw);
-
-                if (creds.serial() == null || creds.pin() == null) {
-                    throw new UpstreamApiException(
-                            "DataBossHub buy response missing serial/pin for slotId=" + slotId
-                                    + " orderId=" + order.getId());
-                }
-
-                order.setDataBossHubSlotId(slotId);
-                order.setSerial(creds.serial());
-                order.setPin(creds.pin());
-                order.setExamDate(creds.examDate());
-                order.setResultsLink(creds.resultsLink());
-                order.setStatus(CheckerOrder.CheckerOrderStatus.COMPLETED);
-                checkerOrderRepository.save(order);
-
-                log.info("[CHECKER] ✔ Checker purchased and order COMPLETED: orderId={} slotId={}",
-                        order.getId(), slotId);
-                return;
-
-            } catch (UpstreamApiException ex) {
-                lastException = ex;
-                log.warn("[CHECKER] Slot purchase failed on attempt {}/{} (likely contention) — " +
-                                "orderId={} slotId={} error={}",
-                        attempt, MAX_SLOT_ATTEMPTS, order.getId(), slotId, ex.getMessage());
-            }
-        }
-
-        log.error("[CHECKER] All {} slot attempts exhausted — orderId={}", MAX_SLOT_ATTEMPTS, order.getId());
-        markCheckerOrderFailed(order.getId(),
-                lastException != null ? lastException.getMessage() : "All slot attempts exhausted");
-        throw new UpstreamApiException(
-                "Checker purchase failed after " + MAX_SLOT_ATTEMPTS + " slot attempts. OrderId=" + order.getId());
+        log.info("[CHECKER] ✔ Provisioned from stock: orderId={} stockId={} source={}",
+                order.getId(), stock.getId(), stock.getSource());
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -351,6 +323,24 @@ public class CheckerService {
         );
         log.info("[CHECKER] Credentials delivery triggered (SMS + on-screen + stored history) — orderId={}",
                 order.getId());
+    }
+
+    // ── Public pricing (no auth) ────────────────────────────────────────────────
+
+    /**
+     * Public-safe checker pricing for every active exam type — the
+     * customer-facing equivalent of PricingService.getPublicPricing() for
+     * bundles. Deliberately excludes resellerPriceGhc and
+     * dataBossHubCategory (see CheckerPublicPricingResponse's Javadoc).
+     */
+    @Transactional(readOnly = true)
+    public List<CheckerPublicPricingResponse> getPublicPricing() {
+        return checkerPricingRepository.findByActiveTrue().stream()
+                .map(p -> CheckerPublicPricingResponse.builder()
+                        .examType(p.getExamType().name())
+                        .publicPriceGhc(p.getPublicPriceGhc())
+                        .build())
+                .toList();
     }
 
     // ── History / status queries ───────────────────────────────────────────────

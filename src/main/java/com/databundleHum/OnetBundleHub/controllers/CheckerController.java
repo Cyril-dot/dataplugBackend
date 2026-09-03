@@ -3,7 +3,9 @@ package com.databundleHum.OnetBundleHub.controllers;
 import com.databundleHum.OnetBundleHub.dtos.CheckerWalletRequest;
 import com.databundleHum.OnetBundleHub.dtos.InitiateGuestCheckerOrderRequest;
 import com.databundleHum.OnetBundleHub.dtos.response.CheckerOrderResponse;
+import com.databundleHum.OnetBundleHub.dtos.response.CheckerPublicPricingResponse;
 import com.databundleHum.OnetBundleHub.dtos.response.InitiateCheckerOrderResponse;
+import com.databundleHum.OnetBundleHub.security.UserPrincipal;
 import com.databundleHum.OnetBundleHub.services.CheckerService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -11,19 +13,24 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
  * Result-checker (BECE/WASSCE) purchase endpoints — guest and wallet flows.
  *
- * NOTE: @AuthenticationPrincipal is assumed to resolve to a UUID user id,
- * matching the pattern implied elsewhere in this codebase (OrderController
- * wasn't available to confirm the exact security annotation used there —
- * adjust the wallet endpoints below to match your actual auth principal
- * type/extraction if it differs, e.g. a custom UserDetails wrapper).
+ * ── ✅ FIXED: was @AuthenticationPrincipal UUID userId ──────────────────
+ * JwtAuthFilter sets a UserPrincipal record as the Authentication
+ * principal (see its Javadoc), not a raw UUID — a declared parameter type
+ * of UUID never matched the runtime principal type, so
+ * @AuthenticationPrincipal silently resolved to null on every call here.
+ * Every wallet checker purchase and history lookup was broken. Fixed to
+ * use the same currentUserId() SecurityContextHolder pattern already
+ * proven working in WalletController and OrderController.
  */
 @Slf4j
 @RestController
@@ -32,6 +39,20 @@ import java.util.UUID;
 public class CheckerController {
 
     private final CheckerService checkerService;
+
+    private UUID currentUserId() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        UserPrincipal principal = (UserPrincipal) auth.getPrincipal();
+        return principal.userId();
+    }
+
+    // ── Public pricing ────────────────────────────────────────────────────────
+
+    @GetMapping("/pricing")
+    public ResponseEntity<List<CheckerPublicPricingResponse>> getPublicPricing() {
+        log.info("[CHECKER-CONTROLLER] GET /pricing (public)");
+        return ResponseEntity.ok(checkerService.getPublicPricing());
+    }
 
     // ── Guest flow ────────────────────────────────────────────────────────────
 
@@ -53,8 +74,8 @@ public class CheckerController {
 
     @PostMapping("/wallet/purchase")
     public ResponseEntity<CheckerOrderResponse> purchaseWithWallet(
-            @AuthenticationPrincipal UUID userId,
             @Valid @RequestBody CheckerWalletRequest request) {
+        UUID userId = currentUserId();
         log.info("[CHECKER-CONTROLLER] POST /wallet/purchase: userId={} phone={} examType={}",
                 userId, request.getPhoneNumber(), request.getExamType());
         return ResponseEntity.ok(checkerService.purchaseCheckerWallet(userId, request));
@@ -63,9 +84,8 @@ public class CheckerController {
     // ── History ───────────────────────────────────────────────────────────────
 
     @GetMapping("/history")
-    public ResponseEntity<Page<CheckerOrderResponse>> getHistory(
-            @AuthenticationPrincipal UUID userId,
-            Pageable pageable) {
+    public ResponseEntity<Page<CheckerOrderResponse>> getHistory(Pageable pageable) {
+        UUID userId = currentUserId();
         log.info("[CHECKER-CONTROLLER] GET /history: userId={}", userId);
         return ResponseEntity.ok(checkerService.getCheckerHistory(userId, pageable));
     }
