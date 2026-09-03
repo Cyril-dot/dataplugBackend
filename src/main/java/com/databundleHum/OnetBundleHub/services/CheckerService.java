@@ -77,6 +77,15 @@ public class CheckerService {
 
     private static final String SITE_PREFIX = "databaygh.shop";
 
+    // ✅ FIXED — confirmed via live Railway logs: Korapay rejects any
+    // reference containing a period with a 422 ("reference must only
+    // contain alphanumeric, hyphen and underscore characters"). SITE_PREFIX
+    // itself must keep its dot (it's also used to build the payer email
+    // domain, e.g. "0244...@databaygh.shop", where a dot is required) —
+    // this is a separate, sanitized value used ONLY when building the
+    // reference string sent to Korapay.
+    private static final String REFERENCE_PREFIX = "databaygh-shop";
+
     private final CheckerOrderRepository     checkerOrderRepository;
     private final CheckerPricingRepository   checkerPricingRepository;
     private final CheckerStockRepository     checkerStockRepository;
@@ -85,6 +94,7 @@ public class CheckerService {
     private final KorapayService             korapayService;
     private final NotificationService        notificationService;
     private final com.databundleHum.OnetBundleHub.config.AppConfig appConfig;
+    private final com.databundleHum.OnetBundleHub.util.FrontendUrlResolver frontendUrlResolver;
 
     // ── Guest checkout: step 1 — initiate ────────────────────────────────────
 
@@ -97,7 +107,7 @@ public class CheckerService {
         BigDecimal basePriceGhc = pricing.getPublicPriceGhc();
         BigDecimal chargeAmountGhc = addProcessingCharge(basePriceGhc);
 
-        String reference = SITE_PREFIX + "-" + korapayService.generateReference();
+        String reference = REFERENCE_PREFIX + "-" + korapayService.generateReference();
         String guestEmail = buildPayerEmail(request.getPhoneNumber());
 
         Map<String, Object> metadata = new HashMap<>();
@@ -377,7 +387,11 @@ public class CheckerService {
     }
 
     private String buildRedirectUrl() {
-        return appConfig.getAppBaseUrl() + "/payment/callback";
+        // ✅ Now resolved dynamically from the actual calling frontend's
+        // Origin/Referer header (see FrontendUrlResolver) instead of the
+        // static app.base-url config, which requires remembering to update
+        // it every time the frontend's domain changes.
+        return frontendUrlResolver.resolveBaseUrl() + "/payment/callback";
     }
 
     private void rejectIfDuplicate(UUID userId, String phoneNumber, CheckerPricing.ExamType examType) {

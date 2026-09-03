@@ -1,6 +1,7 @@
 package com.databundleHum.OnetBundleHub.services;
 
 import com.databundleHum.OnetBundleHub.config.AppConfig;
+import com.databundleHum.OnetBundleHub.util.FrontendUrlResolver;
 import com.databundleHum.OnetBundleHub.dtos.InitiateGuestOrderRequest;
 import com.databundleHum.OnetBundleHub.dtos.TopUpInitiateRequest;
 import com.databundleHum.OnetBundleHub.dtos.*;
@@ -88,6 +89,15 @@ public class OrderService {
      */
     private static final String SITE_PREFIX = "databaygh.shop";
 
+    // ✅ FIXED — same bug confirmed live on the Korapay checker path
+    // (Railway logs: 422 "reference must only contain alphanumeric, hyphen
+    // and underscore characters"). Paystack references may or may not
+    // enforce the same restriction, but there's no reason to risk it —
+    // this sanitized prefix (no dot) is now used for every reference built
+    // here, while SITE_PREFIX (with its dot) stays as-is for the payer
+    // email domain and free-text metadata, where a dot is fine/required.
+    private static final String REFERENCE_PREFIX = "databaygh-shop";
+
     private final OrderRepository             orderRepository;
     private final UserRepository              userRepository;
     private final PlatformSettingsRepository  platformSettingsRepository;
@@ -98,6 +108,7 @@ public class OrderService {
     private final NotificationService         notificationService;
     private final AffiliateCommissionService  affiliateCommissionService;
     private final AppConfig                   appConfig;
+    private final FrontendUrlResolver          frontendUrlResolver;
     private final PricingService pricingService;
 
     // ── Guest checkout: step 1 — initiate ────────────────────────────────────
@@ -113,7 +124,7 @@ public class OrderService {
         BigDecimal basePriceGhc = settings.getPublicPriceGhc();
         BigDecimal chargeAmountGhc = addProcessingCharge(basePriceGhc);
 
-        String reference  = SITE_PREFIX + "-" + korapayService.generateReference();
+        String reference  = REFERENCE_PREFIX + "-" + korapayService.generateReference();
         String guestEmail = buildPayerEmail(request.getPhoneNumber());
 
         Map<String, Object> metadata = new HashMap<>();
@@ -225,7 +236,7 @@ public class OrderService {
         log.info("[ORDER] initiateTopUp: userId={} amount={}", userId, request.getAmount());
 
         User   user      = findUserOrThrow(userId);
-        String reference = SITE_PREFIX + "-" + korapayService.generateReference();
+        String reference = REFERENCE_PREFIX + "-" + korapayService.generateReference();
 
         BigDecimal baseAmountGhc = request.getAmount();
         BigDecimal chargeAmountGhc = addProcessingCharge(baseAmountGhc);
@@ -554,7 +565,10 @@ public class OrderService {
     }
 
     private String buildRedirectUrl() {
-        return appConfig.getAppBaseUrl() + "/payment/callback";
+        // ✅ Now resolved dynamically from the actual calling frontend's
+        // Origin/Referer header (see FrontendUrlResolver) instead of the
+        // static app.base-url config.
+        return frontendUrlResolver.resolveBaseUrl() + "/payment/callback";
     }
 
     private void rejectIfDuplicate(UUID userId, String phoneNumber,

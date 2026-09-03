@@ -1,6 +1,7 @@
 package com.databundleHum.OnetBundleHub.services;
 
 import com.databundleHum.OnetBundleHub.config.AppConfig;
+import com.databundleHum.OnetBundleHub.util.FrontendUrlResolver;
 import com.databundleHum.OnetBundleHub.dtos.InitiateGuestStorefrontCheckerOrderRequest;
 import com.databundleHum.OnetBundleHub.dtos.InitiateGuestStorefrontOrderRequest;
 import com.databundleHum.OnetBundleHub.dtos.StorefrontResponse;
@@ -77,6 +78,7 @@ public class ResellerStorefrontService {
     private final DataPrimoService           dataPrimoService;
     private final NotificationService        notificationService;
     private final AppConfig appConfig;
+    private final FrontendUrlResolver frontendUrlResolver;
 
     // ── Checker feature dependencies (NEW) ─────────────────────────────────────
     private final CheckerOrderRepository            checkerOrderRepository;
@@ -634,7 +636,9 @@ public class ResellerStorefrontService {
     }
 
     private String buildRedirectUrl() {
-        return appConfig.getAppBaseUrl() + "/payment/callback";
+        // ✅ Now resolved dynamically from the actual calling frontend's
+        // Origin/Referer header instead of the static app.base-url config.
+        return frontendUrlResolver.resolveBaseUrl() + "/payment/callback";
     }
 
     private ResellerProfile findProfileBySlugOrThrow(String slug) {
