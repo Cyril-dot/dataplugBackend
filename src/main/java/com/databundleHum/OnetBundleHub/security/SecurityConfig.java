@@ -132,6 +132,19 @@ public class SecurityConfig {
                         // CheckerPublicPricingResponse's Javadoc.
                         .requestMatchers(HttpMethod.GET, "/api/checkers/pricing").permitAll()
 
+                        // ── FIX: guest checker checkout was never actually reachable —
+                        // CheckerController's /guest/initiate and /guest/status were built
+                        // to be callable without a token (that's the entire point of the
+                        // "No account needed" guest flow), but no permitAll() rule for them
+                        // was ever added here. Every guest request fell through to
+                        // anyRequest().authenticated() at the bottom and got a 401
+                        // ("Missing or invalid authentication token") on every attempt to
+                        // pay, even though the frontend correctly never sent a token for
+                        // guests in the first place — there was nothing wrong with the
+                        // request, just a missing rule on this side.
+                        .requestMatchers(HttpMethod.POST, "/api/checkers/guest/initiate").permitAll()
+                        .requestMatchers(HttpMethod.GET,  "/api/checkers/guest/status").permitAll()
+
                         // ── Public order status + guest checkout ─────────────────────
                         .requestMatchers(HttpMethod.GET,  "/api/v1/orders/status").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/orders/guest").permitAll()
