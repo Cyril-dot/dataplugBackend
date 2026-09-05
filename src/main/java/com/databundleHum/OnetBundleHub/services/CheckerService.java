@@ -158,7 +158,20 @@ public class CheckerService {
     /**
      * Called by WebhookController/WebhookService after Korapay payment is
      * verified for a CHECKER_ORDER metadata type.
+     *
+     * ── FIX: this method had no @Transactional of its own, the same bug
+     * already fixed on purchaseCheckerWallet(). provisionFromStock() is
+     * @Transactional(REQUIRES_NEW), which needs an existing transaction to
+     * suspend — with none here, the pessimistic lock query inside it threw
+     * TransactionRequiredException on every single guest Korapay purchase,
+     * regardless of stock levels. The widened exception handling added
+     * earlier correctly caught this and marked the order FAILED (with a
+     * refund) instead of leaving it stuck — but the guest still never
+     * received a code, because the order never actually reached
+     * provisioning. Adding @Transactional here is what actually lets
+     * provisionFromStock's REQUIRES_NEW succeed.
      */
+    @Transactional
     public void fulfilCheckerKorapayOrder(String reference) {
         log.info("[CHECKER] fulfilCheckerKorapayOrder: ref={}", reference);
 
@@ -507,6 +520,19 @@ public class CheckerService {
         }
     }
 
+    /**
+     * Public wrapper around markCheckerOrderFailed() for callers outside
+     * this service — currently ResellerStorefrontService's two checker
+     * fulfilment paths, which previously only caught UpstreamApiException
+     * and, even then, never actually marked the order FAILED in the
+     * database (just logged and alerted) — so a stuck storefront checker
+     * order looked identical to a genuinely pending one, with no way to
+     * tell them apart or have the reconciliation sweep pick it up.
+     */
+    public void markOrderFailed(Long orderId, String reason) {
+        markCheckerOrderFailed(orderId, reason);
+    }
+
     /** On-screen delivery is just returning the order (already has credentials); this handles the SMS half. */
     private void deliverCredentials(CheckerOrder order) {
         notificationService.sendCheckerCredentialsSms(
@@ -573,11 +599,24 @@ public class CheckerService {
     }
 
     private String buildRedirectUrl() {
-        // ✅ Now resolved dynamically from the actual calling frontend's
+        // ✅ Resolved dynamically from the actual calling frontend's
         // Origin/Referer header (see FrontendUrlResolver) instead of the
         // static app.base-url config, which requires remembering to update
         // it every time the frontend's domain changes.
-        return frontendUrlResolver.resolveBaseUrl() + "/payment/callback";
+        //
+        // ── FIX: this previously pointed at /payment/callback, an old,
+        // unmaintained page from before the checker/buy flow had polling,
+        // localStorage-backed resume-on-reload, or the result popup. A
+        // guest redirected there after paying landed on a bare, empty
+        // exam-type selection form with none of that state — from their
+        // point of view, it looked like the purchase reset and asked them
+        // to fill in the form again from scratch, even though the payment
+        // and provisioning had actually gone through server-side. Pointing
+        // this at /checker/buy instead means the guest lands back on the
+        // exact page that already knows how to resume: it checks
+        // localStorage for a pending guest reference and picks polling back
+        // up immediately, showing the result popup the moment it completes.
+        return frontendUrlResolver.resolveBaseUrl() + "/checker/buy";
     }
 
     private void rejectIfDuplicate(UUID userId, String phoneNumber, CheckerPricing.ExamType examType) {

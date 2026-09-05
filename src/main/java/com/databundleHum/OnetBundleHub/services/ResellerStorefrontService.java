@@ -169,7 +169,7 @@ public class ResellerStorefrontService {
                 customerName,
                 sellingPrice,
                 reference,
-                buildRedirectUrl(),
+                buildRedirectUrl(slug),
                 Map.of(
                         "type",              "STOREFRONT_GUEST_ORDER",
                         "phone",             request.getPhoneNumber(),
@@ -329,7 +329,7 @@ public class ResellerStorefrontService {
         metadata.put("resellerProfileId", profile.getId().toString());
 
         Map<String, Object> korapayData = korapayService.initiateTransaction(
-                guestEmail, customerName, sellingPrice, reference, buildRedirectUrl(), metadata);
+                guestEmail, customerName, sellingPrice, reference, buildRedirectUrl(slug), metadata);
 
         CheckerOrder order = CheckerOrder.builder()
                 .phoneNumber(request.getPhoneNumber())
@@ -376,11 +376,27 @@ public class ResellerStorefrontService {
                     order.getSerial(), order.getPin(), order.getResultsLink());
             updateResellerCheckerStats(order);
         } catch (UpstreamApiException ex) {
+            // provisionFromStock already marks FAILED itself for the
+            // out-of-stock case before throwing, so no need to do it again
+            // here — this branch is just for logging/alerting.
             log.error("[STOREFRONT] Checker provision failed: orderId={} error={}", order.getId(), ex.getMessage());
             if (order.getUser() != null) {
                 notificationService.sendCheckerOrderFailedAlert(
                         order.getUser().getEmail(), order.getUser().getFullName(), order.getId());
             }
+        } catch (Exception ex) {
+            // ── FIX: previously only UpstreamApiException was caught here.
+            // Any other failure (e.g. the missing-@Transactional bug that
+            // hit the guest and wallet checker paths — see
+            // fulfilCheckerKorapayOrder's Javadoc) propagated out uncaught,
+            // leaving the order stuck at VERIFIED forever with nothing to
+            // mark it FAILED or alert anyone. Now every failure path
+            // explicitly marks the order FAILED so it's indistinguishable
+            // from a genuine stuck order and the reconciliation sweep (or a
+            // support agent) can act on it.
+            log.error("[STOREFRONT] Unexpected error provisioning checker: orderId={} error={}",
+                    order.getId(), ex.getMessage(), ex);
+            checkerService.markOrderFailed(order.getId(), "Unexpected error while provisioning: " + ex.getMessage());
         }
     }
 
@@ -446,6 +462,19 @@ public class ResellerStorefrontService {
 
             notificationService.sendCheckerOrderFailedAlert(
                     customer.getEmail(), customer.getFullName(), order.getId());
+        } catch (Exception ex) {
+            // ── FIX: same class of bug as the guest/wallet checker paths —
+            // only UpstreamApiException was caught, so any other failure
+            // left the wallet debited with the order stuck at VERIFIED and
+            // nothing refunded or marked FAILED. Now caught, refunded, and
+            // explicitly marked FAILED.
+            log.error("[STOREFRONT] Unexpected error provisioning wallet checker order: orderId={} error={}",
+                    order.getId(), ex.getMessage(), ex);
+
+            walletService.credit(customerId, sellingPrice, TransactionType.REFUND,
+                    "Refund: failed checker delivery for order #" + order.getId(), null);
+
+            checkerService.markOrderFailed(order.getId(), "Unexpected error while provisioning: " + ex.getMessage());
         }
 
         CheckerOrder finalOrder = checkerOrderRepository.findById(order.getId()).orElseThrow();
@@ -637,10 +666,19 @@ public class ResellerStorefrontService {
         return digits + "@" + domain;
     }
 
-    private String buildRedirectUrl() {
-        // ✅ Now resolved dynamically from the actual calling frontend's
+    private String buildRedirectUrl(String slug) {
+        // ✅ Resolved dynamically from the actual calling frontend's
         // Origin/Referer header instead of the static app.base-url config.
-        return frontendUrlResolver.resolveBaseUrl() + "/payment/callback";
+        //
+        // ── FIX: this previously always pointed at the generic
+        // /payment/callback page, which is a bare, unwired leftover with no
+        // knowledge of which storefront the guest was buying from or any
+        // polling/resume logic. A guest redirected there after paying saw
+        // an empty checkout form instead of their order completing. Now
+        // points back at the actual storefront page (/store/[slug]), which
+        // already checks localStorage on load for a pending guest reference
+        // scoped to this exact slug and resumes polling immediately.
+        return frontendUrlResolver.resolveBaseUrl() + "/store/" + slug;
     }
 
     private ResellerProfile findProfileBySlugOrThrow(String slug) {
