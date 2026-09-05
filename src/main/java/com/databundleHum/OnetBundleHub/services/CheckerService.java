@@ -165,11 +165,39 @@ public class CheckerService {
 
         try {
             provisionFromStock(order);
-            deliverCredentials(order);
         } catch (UpstreamApiException ex) {
+            // provisionFromStock already marks FAILED itself for the out-of-stock
+            // case before throwing, so this branch is just for logging.
             log.error("[CHECKER] Stock provisioning failed after Korapay payment: orderId={} ref={} error={}",
                     order.getId(), reference, ex.getMessage());
-            markCheckerOrderFailed(order.getId(), ex.getMessage());
+            return;
+        } catch (Exception ex) {
+            // ── FIX: previously only UpstreamApiException was caught here, so any
+            // other failure (DB error, constraint violation, NPE, etc.) propagated
+            // out uncaught. WebhookController's outer try/catch swallows it and
+            // logs — but by then the order is stuck at VERIFIED forever, with no
+            // scheduled job to reconcile it. The customer had already paid and the
+            // frontend shows VERIFIED as "Pending" indefinitely. Now any failure
+            // here is caught and the order is explicitly marked FAILED so support/
+            // refund flows can pick it up instead of it silently stalling.
+            log.error("[CHECKER] Unexpected error provisioning checker after Korapay payment: orderId={} ref={} error={}",
+                    order.getId(), reference, ex.getMessage(), ex);
+            markCheckerOrderFailed(order.getId(), "Unexpected error while provisioning: " + ex.getMessage());
+            return;
+        }
+
+        // ── FIX: credential delivery (SMS) is now outside the failure path for
+        // provisioning. The order is already COMPLETED at this point (set inside
+        // provisionFromStock's own transaction) — an SMS failure here must NOT
+        // flip a successfully-provisioned order back to FAILED, since the
+        // customer already has valid credentials in their order history/on
+        // screen. We just log the SMS failure so it can be retried/investigated
+        // without corrupting the order's true fulfilment status.
+        try {
+            deliverCredentials(order);
+        } catch (Exception ex) {
+            log.error("[CHECKER] Order provisioned but SMS delivery failed: orderId={} ref={} error={}",
+                    order.getId(), reference, ex.getMessage(), ex);
         }
     }
 
