@@ -343,7 +343,21 @@ public class CheckerService {
      * buy from DataBossHub, return credentials — or refund and fail — all
      * within this one call. No processing charge (already collected at
      * top-up time, same rule as OrderService.placeWalletOrder).
+     *
+     * ── FIX: this method previously had no @Transactional of its own. It
+     * called provisionFromStock(), which is @Transactional(REQUIRES_NEW) —
+     * but REQUIRES_NEW needs an existing transaction to *suspend* while it
+     * runs its own. With no outer transaction here, Hibernate's pessimistic
+     * lock query inside findAvailableForUpdate() (a SELECT ... FOR UPDATE)
+     * threw TransactionRequiredException immediately. That's a plain
+     * RuntimeException, not UpstreamApiException, so the old catch block
+     * never caught it — it propagated straight to GlobalExceptionHandler as
+     * an unhandled 500. By that point the wallet had already been debited
+     * and the order already saved as PENDING, and nothing ever ran to mark
+     * it FAILED or refund it. The order sat at PENDING forever even with
+     * stock available to fulfil it, and the customer paid and got nothing.
      */
+    @Transactional
     public CheckerOrderResponse purchaseCheckerWallet(UUID userId, CheckerWalletRequest request) {
         log.info("[CHECKER] purchaseCheckerWallet: userId={} phone={} examType={}",
                 userId, request.getPhoneNumber(), request.getExamType());
@@ -382,12 +396,33 @@ public class CheckerService {
 
         try {
             provisionFromStock(order);
-            deliverCredentials(order);
         } catch (UpstreamApiException ex) {
-            handleWalletProvisioningFailure(order.getId(), user, price, ex);
+            handleWalletProvisioningFailure(order.getId(), user, price, ex.getMessage());
+            return toResponse(checkerOrderRepository.findById(order.getId()).orElseThrow());
+        } catch (Exception ex) {
+            // ── FIX: any non-UpstreamApiException failure (like the
+            // TransactionRequiredException above) is now caught here too, so
+            // the order can never again silently strand at PENDING with the
+            // wallet already debited and nothing done about it.
+            log.error("[CHECKER] Unexpected error provisioning wallet checker order: orderId={} userId={} error={}",
+                    order.getId(), userId, ex.getMessage(), ex);
+            handleWalletProvisioningFailure(order.getId(), user, price,
+                    "Unexpected error while provisioning: " + ex.getMessage());
+            return toResponse(checkerOrderRepository.findById(order.getId()).orElseThrow());
         }
 
-        return toResponse(checkerOrderRepository.findById(order.getId()).orElseThrow());
+        // ── FIX: SMS delivery is now outside the failure path, same as the
+        // guest/Korapay flow — an SMS failure must never flip an
+        // already-COMPLETED, already-provisioned order back to FAILED.
+        CheckerOrder provisioned = checkerOrderRepository.findById(order.getId()).orElseThrow();
+        try {
+            deliverCredentials(provisioned);
+        } catch (Exception ex) {
+            log.error("[CHECKER] Order provisioned but SMS delivery failed: orderId={} userId={} error={}",
+                    order.getId(), userId, ex.getMessage(), ex);
+        }
+
+        return toResponse(provisioned);
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -396,8 +431,8 @@ public class CheckerService {
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    protected void handleWalletProvisioningFailure(Long orderId, User user, BigDecimal price, UpstreamApiException ex) {
-        markCheckerOrderFailed(orderId, ex.getMessage());
+    protected void handleWalletProvisioningFailure(Long orderId, User user, BigDecimal price, String reason) {
+        markCheckerOrderFailed(orderId, reason);
         walletService.credit(user.getId(), price, TransactionType.REFUND,
                 "Refund: failed checker delivery for order #" + orderId, null);
         notificationService.sendCheckerOrderFailedAlert(user.getEmail(), user.getFullName(), orderId);
