@@ -42,8 +42,15 @@ public class AdminCheckerPricingController {
                 request.getExamType(), request.getPublicPriceGhc(), request.getResellerPriceGhc(),
                 request.getDataBossHubCategory());
 
+        // ✅ FIXED: was findByExamTypeAndActiveTrue — see
+        // CheckerPricingRepository.findByExamType's Javadoc for the full
+        // explanation. exam_type is unique at the DB level regardless of
+        // active status, so the lookup here must not filter on active
+        // either, or a previously-deactivated row for this exam type
+        // causes a duplicate-insert 500 instead of correctly updating and
+        // reactivating the existing row.
         CheckerPricing pricing = checkerPricingRepository
-                .findByExamTypeAndActiveTrue(request.getExamType())
+                .findByExamType(request.getExamType())
                 .orElse(CheckerPricing.builder().examType(request.getExamType()).build());
 
         pricing.setPublicPriceGhc(request.getPublicPriceGhc());
