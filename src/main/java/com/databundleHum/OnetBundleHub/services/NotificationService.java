@@ -104,6 +104,16 @@ public class NotificationService {
      * @param resultsLink optional URL to check results, may be null
      */
     @Async
+    /**
+     * ✅ Made @Async — SMS delivery is a nice-to-have notification, not the
+     * actual deliverable. The checker's serial/PIN are already returned
+     * directly in the purchase API response and viewable anytime after via
+     * checker history, so a slow or failing SMS provider call should never
+     * hold up (or, worse, appear to fail) a purchase that has already
+     * genuinely succeeded — the wallet's already been debited and the
+     * checker's already been assigned by the time this runs.
+     */
+    @Async
     public void sendCheckerCredentialsSms(String phone, String examType, String serial,
                                           String pin, String resultsLink) {
         log.info("Sending checker credentials SMS: to={} examType={}", phone, examType);
