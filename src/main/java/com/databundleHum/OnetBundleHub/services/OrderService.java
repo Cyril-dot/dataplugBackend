@@ -18,6 +18,8 @@ import com.databundleHum.OnetBundleHub.repos.OrderRepository;
 import com.databundleHum.OnetBundleHub.repos.PlatformSettingsRepository;
 import com.databundleHum.OnetBundleHub.repos.ProcessedRefRepository;
 import com.databundleHum.OnetBundleHub.repos.UserRepository;
+import com.databundleHum.OnetBundleHub.repos.WalletTopUpRepository;
+import com.databundleHum.OnetBundleHub.entity.WalletTopUp;
 import com.databundleHum.OnetBundleHub.security.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -102,6 +104,7 @@ public class OrderService {
     private final UserRepository              userRepository;
     private final PlatformSettingsRepository  platformSettingsRepository;
     private final ProcessedRefRepository      processedRefRepository;
+    private final WalletTopUpRepository       walletTopUpRepository;
     private final WalletService               walletService;
     private final KorapayService              korapayService;
     private final DataPrimoService            dataPrimoService;
@@ -241,6 +244,19 @@ public class OrderService {
         BigDecimal baseAmountGhc = request.getAmount();
         BigDecimal chargeAmountGhc = addProcessingCharge(baseAmountGhc);
 
+        // ✅ Persisted BEFORE calling Korapay at all — see WalletTopUp's
+        // Javadoc for why. This is what lets the webhook (and the manual
+        // verify fallback) find the userId purely from the reference,
+        // without depending on Korapay echoing back the metadata we send
+        // here (confirmed via live logs that it does not).
+        walletTopUpRepository.save(WalletTopUp.builder()
+                .gatewayRef(reference)
+                .userId(userId)
+                .baseAmountGhc(baseAmountGhc)
+                .chargeAmountGhc(chargeAmountGhc)
+                .status(WalletTopUp.Status.PENDING)
+                .build());
+
         Map<String, Object> metadata = new HashMap<>();
         metadata.put("type",          "WALLET_TOPUP");
         metadata.put("userId",        userId.toString());
@@ -269,25 +285,48 @@ public class OrderService {
 
     // ── Wallet top-up: webhook credit ─────────────────────────────────────────
 
+    /**
+     * ✅ FIXED: was processTopUpWebhook(UUID userId, BigDecimal amountGhc,
+     * String reference) — those first two params came from webhook
+     * metadata, which Korapay's actual charge.success payload never
+     * includes (confirmed via live logs). Now takes only the reference,
+     * looks up the WalletTopUp row saved at initiate time for the userId,
+     * and re-verifies live against Korapay for the amount — matching
+     * exactly how the manual "Verify Now" fallback already worked, so both
+     * paths are now equally reliable and share the same idempotency guard.
+     */
     @Transactional
-    public void processTopUpWebhook(UUID userId, BigDecimal amountGhc, String reference) {
-        log.info("[ORDER] processTopUpWebhook: userId={} amount={} ref={}", userId, amountGhc, reference);
+    public void processTopUpWebhook(String reference) {
+        log.info("[ORDER] processTopUpWebhook: ref={}", reference);
 
         if (processedRefRepository.existsByReference(reference)) {
             log.warn("[ORDER] Duplicate top-up reference ignored: ref={}", reference);
             return;
         }
 
-        walletService.credit(userId, amountGhc, TransactionType.TOPUP,
+        WalletTopUp topUp = walletTopUpRepository.findByGatewayRef(reference)
+                .orElseThrow(() -> new UpstreamApiException(
+                        "No WalletTopUp record found for ref=" + reference
+                                + " — cannot credit without a known userId"));
+
+        Map<String, Object> txData          = korapayService.verifyTransaction(reference);
+        BigDecimal          chargedAmountGhc = korapayService.extractAmountGhc(txData);
+        BigDecimal          baseAmountGhc    = removeProcessingCharge(chargedAmountGhc);
+
+        walletService.credit(topUp.getUserId(), baseAmountGhc, TransactionType.TOPUP,
                 "Wallet top-up via Korapay", reference);
+
+        topUp.setStatus(WalletTopUp.Status.COMPLETED);
+        topUp.setCompletedAt(LocalDateTime.now());
+        walletTopUpRepository.save(topUp);
 
         processedRefRepository.save(ProcessedRef.builder()
                 .reference(reference)
                 .eventType("WALLET_TOPUP")
                 .build());
 
-        log.info("[ORDER] Wallet top-up credited: userId={} amount={} ref={}",
-                userId, amountGhc, reference);
+        log.info("[ORDER] ✔ Wallet top-up credited via webhook: userId={} amount={} ref={}",
+                topUp.getUserId(), baseAmountGhc, reference);
     }
 
     // ── Wallet top-up: manual verify fallback ─────────────────────────────────
@@ -316,6 +355,16 @@ public class OrderService {
                 .reference(request.getPaystackRef())
                 .eventType("WALLET_TOPUP")
                 .build());
+
+        // Keep the WalletTopUp record's status consistent regardless of
+        // which path (webhook or manual verify) actually completes it
+        // first — purely for accurate admin/reporting history, since the
+        // idempotency guard above already prevents any double-credit.
+        walletTopUpRepository.findByGatewayRef(request.getPaystackRef()).ifPresent(topUp -> {
+            topUp.setStatus(WalletTopUp.Status.COMPLETED);
+            topUp.setCompletedAt(LocalDateTime.now());
+            walletTopUpRepository.save(topUp);
+        });
 
         log.info("[ORDER] Manual top-up verify success: userId={} chargedAmount={} creditedAmount={} ref={}",
                 userId, chargedAmountGhc, baseAmountGhc, request.getPaystackRef());

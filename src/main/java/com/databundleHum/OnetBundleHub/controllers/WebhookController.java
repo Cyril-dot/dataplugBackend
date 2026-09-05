@@ -1,5 +1,8 @@
 package com.databundleHum.OnetBundleHub.controllers;
 
+import com.databundleHum.OnetBundleHub.repos.CheckerOrderRepository;
+import com.databundleHum.OnetBundleHub.repos.OrderRepository;
+import com.databundleHum.OnetBundleHub.repos.WalletTopUpRepository;
 import com.databundleHum.OnetBundleHub.services.CheckerService;
 import com.databundleHum.OnetBundleHub.services.OrderService;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -15,12 +18,9 @@ import org.springframework.web.bind.annotation.*;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.util.HexFormat;
 import java.util.Map;
-import java.util.UUID;
 
 @Slf4j
 @RestController
@@ -31,6 +31,9 @@ public class WebhookController {
 
     private final OrderService orderService;
     private final CheckerService checkerService;
+    private final CheckerOrderRepository checkerOrderRepository;
+    private final WalletTopUpRepository walletTopUpRepository;
+    private final OrderRepository orderRepository;
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -38,20 +41,24 @@ public class WebhookController {
     private String korapaySecretKey;
 
     /**
-     * Must match OrderService.PROCESSING_CHARGE_RATE / CheckerService's
-     * matching constant. Only used as a FALLBACK to back a base amount out
-     * of the raw charged amount if "baseAmountGhc" is ever missing from
-     * metadata — the normal path always uses the metadata value directly.
-     */
-    private static final BigDecimal PROCESSING_CHARGE_RATE = new BigDecimal("0.10");
-
-    /**
-     * ── CHECKER FEATURE (2026-08-26) ─────────────────────────────────────────
-     * Added a "CHECKER_ORDER" branch to the routing switch below, alongside
-     * the existing WALLET_TOPUP / GUEST_ORDER handling. CHECKER_ORDER
-     * webhooks call checkerService.fulfilCheckerKorapayOrder(reference)
-     * instead of orderService.fulfilKorapayOrder(reference) — everything
-     * else about signature validation and payload parsing is unchanged.
+     * ── ✅ FIXED: routing no longer depends on webhook metadata ──────────────
+     * Confirmed via live Railway logs that Korapay's actual charge.success
+     * payload does not include a "metadata" key in its data block at all —
+     * "Data block keys: [reference, payment_reference, currency, amount,
+     * fee, payment_method, status]". The old code read
+     * data.get("metadata").get("type") to decide whether this was a
+     * WALLET_TOPUP / CHECKER_ORDER / GUEST_ORDER — that was always null in
+     * production, so every webhook fell through to the "unknown type,
+     * ignoring" branch and nothing ever got fulfilled or credited
+     * automatically. This affected ALL Korapay-funded flows, not just
+     * wallet top-ups.
+     *
+     * Routing is now determined by looking the reference up against each
+     * table directly — CheckerOrder, WalletTopUp, then Order (bundle) — and
+     * calling the matching fulfilment method, none of which need anything
+     * beyond the reference itself (they already look up everything else
+     * internally, which is exactly why this fix is possible with zero
+     * changes to the actual fulfilment logic in each service).
      */
     @PostMapping("/korapay")
     @Operation(summary = "Korapay webhook — charge.success handler")
@@ -104,44 +111,27 @@ public class WebhookController {
             return ResponseEntity.badRequest().build();
         }
 
-        Map<String, Object> meta = extractMeta(data);
-        log.info("[WEBHOOK] Metadata present: {}", meta != null ? "YES, keys=" + meta.keySet() : "NO - NULL");
-        String type = meta != null ? (String) meta.get("type") : null;
-        log.info("[WEBHOOK] Transaction type from metadata: {}", type);
+        String type = resolveTransactionType(reference);
+        log.info("[WEBHOOK] Routing: ref={} type={} (resolved via DB lookup, not metadata)", reference, type);
 
-        Object rawAmount = data.get("amount");
-        log.info("[WEBHOOK] Raw amount from Korapay: {}", rawAmount);
-
-        log.info("[WEBHOOK] Routing: ref={} type={}", reference, type);
         try {
-            if ("WALLET_TOPUP".equals(type)) {
-                String userIdStr = (String) meta.get("userId");
-                log.info("[WEBHOOK] userId from metadata: {}", userIdStr);
-                UUID userId = UUID.fromString(userIdStr);
-
-                BigDecimal chargedAmountGhc = extractAmountGhc(data);
-                BigDecimal baseAmountGhc = extractBaseAmountGhc(meta, chargedAmountGhc, reference);
-
-                log.info("[WEBHOOK] Processing WALLET_TOPUP: userId={} chargedAmount=GHS{} " +
-                                "creditAmount=GHS{} ref={}",
-                        userId, chargedAmountGhc, baseAmountGhc, reference);
-                orderService.processTopUpWebhook(userId, baseAmountGhc, reference);
-                log.info("[WEBHOOK] ✅ WALLET_TOPUP credited successfully: userId={} amount=GHS{} ref={}",
-                        userId, baseAmountGhc, reference);
-
-            } else if ("GUEST_ORDER".equals(type)) {
-                log.info("[WEBHOOK] Processing GUEST_ORDER: ref={}", reference);
-                orderService.fulfilKorapayOrder(reference);
-                log.info("[WEBHOOK] ✅ GUEST_ORDER fulfilled: ref={}", reference);
-
-            } else if ("CHECKER_ORDER".equals(type)) {
-                log.info("[WEBHOOK] Processing CHECKER_ORDER: ref={}", reference);
-                checkerService.fulfilCheckerKorapayOrder(reference);
-                log.info("[WEBHOOK] ✅ CHECKER_ORDER fulfilled: ref={}", reference);
-
-            } else {
-                log.warn("[WEBHOOK] ⚠️ Unknown or null transaction type='{}' ref={} — ignoring", type, reference);
-                log.warn("[WEBHOOK] Full metadata dump: {}", meta);
+            switch (type) {
+                case "CHECKER_ORDER" -> {
+                    log.info("[WEBHOOK] Processing CHECKER_ORDER: ref={}", reference);
+                    checkerService.fulfilCheckerKorapayOrder(reference);
+                    log.info("[WEBHOOK] ✅ CHECKER_ORDER fulfilled: ref={}", reference);
+                }
+                case "WALLET_TOPUP" -> {
+                    log.info("[WEBHOOK] Processing WALLET_TOPUP: ref={}", reference);
+                    orderService.processTopUpWebhook(reference);
+                    log.info("[WEBHOOK] ✅ WALLET_TOPUP credited: ref={}", reference);
+                }
+                case "GUEST_ORDER" -> {
+                    log.info("[WEBHOOK] Processing GUEST_ORDER: ref={}", reference);
+                    orderService.fulfilKorapayOrder(reference);
+                    log.info("[WEBHOOK] ✅ GUEST_ORDER fulfilled: ref={}", reference);
+                }
+                default -> log.warn("[WEBHOOK] ⚠️ Reference matched no known table: ref={} — ignoring", reference);
             }
         } catch (Exception ex) {
             log.error("[WEBHOOK] ❌ Processing error: ref={} type={} error={}", reference, type, ex.getMessage(), ex);
@@ -152,6 +142,14 @@ public class WebhookController {
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
+
+    /** Checked in this order since it's roughly most-to-least frequent in practice — order has no functional significance. */
+    private String resolveTransactionType(String reference) {
+        if (checkerOrderRepository.findByGatewayRef(reference).isPresent()) return "CHECKER_ORDER";
+        if (walletTopUpRepository.findByGatewayRef(reference).isPresent()) return "WALLET_TOPUP";
+        if (orderRepository.findByPaystackRef(reference).isPresent()) return "GUEST_ORDER";
+        return "UNKNOWN";
+    }
 
     private boolean isValidSignature(JsonNode dataNode, String signature) {
         if (signature == null || signature.isBlank()) {
@@ -185,41 +183,5 @@ public class WebhookController {
             log.error("[WEBHOOK] ❌ Failed to parse raw body as JSON: {}", ex.getMessage(), ex);
             return null;
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> extractMeta(Map<String, Object> data) {
-        Object meta = data.get("metadata");
-        return (meta instanceof Map) ? (Map<String, Object>) meta : null;
-    }
-
-    private BigDecimal extractAmountGhc(Map<String, Object> data) {
-        Object raw = data.get("amount");
-        if (raw == null) {
-            log.warn("[WEBHOOK] Amount is null, defaulting to 0");
-            return BigDecimal.ZERO;
-        }
-        return new BigDecimal(raw.toString()).setScale(2, RoundingMode.HALF_UP);
-    }
-
-    private BigDecimal extractBaseAmountGhc(Map<String, Object> meta,
-                                            BigDecimal chargedAmountGhc,
-                                            String reference) {
-        Object rawBase = meta != null ? meta.get("baseAmountGhc") : null;
-
-        if (rawBase != null) {
-            try {
-                return new BigDecimal(rawBase.toString()).setScale(2, RoundingMode.HALF_UP);
-            } catch (NumberFormatException ex) {
-                log.error("[WEBHOOK] ❌ Unparseable baseAmountGhc='{}' ref={} — falling back",
-                        rawBase, reference);
-            }
-        } else {
-            log.warn("[WEBHOOK] ⚠️ metadata.baseAmountGhc missing ref={} — falling back to " +
-                    "back-calculating from charged amount", reference);
-        }
-
-        return chargedAmountGhc
-                .divide(BigDecimal.ONE.add(PROCESSING_CHARGE_RATE), 2, RoundingMode.HALF_UP);
     }
 }
