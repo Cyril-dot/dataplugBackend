@@ -438,7 +438,7 @@ public class CheckerService {
         notificationService.sendCheckerOrderFailedAlert(user.getEmail(), user.getFullName(), orderId);
 
         log.error("[CHECKER] Provisioning failed, wallet refunded: orderId={} userId={} amount={} error={}",
-                orderId, user.getId(), price, ex.getMessage());
+                orderId, user.getId(), price, reason);
     }
 
     // ── Shared stock provisioning (used by guest, wallet, storefront) ────────
