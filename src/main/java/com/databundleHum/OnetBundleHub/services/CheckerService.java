@@ -499,6 +499,7 @@ public class CheckerService {
                 .map(p -> CheckerPublicPricingResponse.builder()
                         .examType(p.getExamType().name())
                         .publicPriceGhc(p.getPublicPriceGhc())
+                        .inStock(checkerStockRepository.countByExamTypeAndUsedFalse(p.getExamType()) > 0)
                         .build())
                 .toList();
     }

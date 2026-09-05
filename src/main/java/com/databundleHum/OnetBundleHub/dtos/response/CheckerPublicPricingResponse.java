@@ -18,4 +18,12 @@ import java.math.BigDecimal;
 public class CheckerPublicPricingResponse {
     private String examType;
     private BigDecimal publicPriceGhc;
+    /**
+     * False when there are zero unused CheckerStock rows for this exam
+     * type right now. The frontend uses this to grey out / hide the option
+     * before a customer pays for something we can't actually deliver —
+     * previously a customer could pay for an out-of-stock exam type and
+     * only find out after paying, when their order failed and got refunded.
+     */
+    private boolean inStock;
 }
