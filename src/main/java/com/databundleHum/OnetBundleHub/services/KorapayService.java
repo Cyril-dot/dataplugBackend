@@ -105,7 +105,7 @@ public class KorapayService {
         } catch (WebClientResponseException ex) {
             log.error("[KORAPAY] HTTP error during initiate: status={} body={} ref={}",
                     ex.getStatusCode(), ex.getResponseBodyAsString(), reference);
-            throw new UpstreamApiException("Korapay error: " + ex.getMessage());
+            throw new UpstreamApiException("Korapay: " + extractKorapayErrorMessage(ex));
         }
     }
 
@@ -143,7 +143,7 @@ public class KorapayService {
         } catch (WebClientResponseException ex) {
             log.error("[KORAPAY] HTTP error during verify: status={} body={} ref={}",
                     ex.getStatusCode(), ex.getResponseBodyAsString(), reference);
-            throw new UpstreamApiException("Korapay verify error: " + ex.getMessage());
+            throw new UpstreamApiException("Korapay: " + extractKorapayErrorMessage(ex));
         }
     }
 
@@ -185,5 +185,34 @@ public class KorapayService {
             log.error("[KORAPAY-SIG] HMAC-SHA256 computation failed", ex);
             return false;
         }
+    }
+
+    // ── Error message extraction ─────────────────────────────────────────────
+
+    /**
+     * ✅ FIXED: the catch blocks above used to build the user-facing error
+     * from ex.getMessage() alone — for a WebClientResponseException that's
+     * just the generic HTTP status line (e.g. "409 Conflict from POST
+     * https://api.korapay.com/..."), never Korapay's own explanation. The
+     * actual useful text (e.g. "The amount supplied does not meet
+     * transaction limit for any payment channel") lives in the response
+     * body and was only ever logged server-side, never shown to the
+     * customer — so every failure looked identical and unhelpful from the
+     * frontend regardless of the real cause. This parses Korapay's JSON
+     * error body ({ "message": "...", "code": "..." }) and falls back to
+     * the generic HTTP message only if the body isn't parseable JSON.
+     */
+    private String extractKorapayErrorMessage(WebClientResponseException ex) {
+        try {
+            JsonNode body = objectMapper.readTree(ex.getResponseBodyAsString());
+            String message = body.path("message").asText(null);
+            if (message != null && !message.isBlank()) {
+                return message;
+            }
+        } catch (Exception parseEx) {
+            log.warn("[KORAPAY] Could not parse error response body as JSON: {}",
+                    ex.getResponseBodyAsString());
+        }
+        return ex.getMessage();
     }
 }
