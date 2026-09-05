@@ -15,6 +15,7 @@ import com.databundleHum.OnetBundleHub.repos.CheckerPricingRepository;
 import com.databundleHum.OnetBundleHub.repos.CheckerStockRepository;
 import com.databundleHum.OnetBundleHub.repos.UserRepository;
 import com.databundleHum.OnetBundleHub.security.BundleNotFoundException;
+import com.databundleHum.OnetBundleHub.security.ConflictException;
 import com.databundleHum.OnetBundleHub.security.DuplicateOrderException;
 import com.databundleHum.OnetBundleHub.security.ResourceNotFoundException;
 import com.databundleHum.OnetBundleHub.security.UpstreamApiException;
@@ -212,6 +213,127 @@ public class CheckerService {
 
         log.info("[CHECKER] Checker order VERIFIED: orderId={} ref={}", order.getId(), reference);
         return order;
+    }
+
+    // ── Recovery: stuck (VERIFIED-but-never-provisioned) orders ────────────────
+
+    /**
+     * Any order sitting at VERIFIED means the customer's payment cleared but
+     * provisionFromStock() either never ran to completion or threw something
+     * that (before the exception-handling fix above) escaped uncaught. Used
+     * by both the admin manual-retry endpoint and the scheduled sweep below.
+     */
+    @Transactional(readOnly = true)
+    public List<CheckerOrder> findStuckOrders() {
+        return checkerOrderRepository.findByStatusOrderByCreatedAtAsc(CheckerOrder.CheckerOrderStatus.VERIFIED);
+    }
+
+    /**
+     * Re-attempts provisioning for one stuck order. Safe to call repeatedly —
+     * if stock is still empty it just re-fails with the same "out of stock"
+     * reason each time; once stock exists it completes on the next attempt.
+     * Called by AdminCheckerStockController's manual "retry" endpoint and by
+     * the scheduled sweep.
+     */
+    public CheckerOrderResponse retryStuckOrder(Long orderId) {
+        CheckerOrder order = checkerOrderRepository.findById(orderId)
+                .orElseThrow(() -> new ResourceNotFoundException("Checker order not found: " + orderId));
+
+        if (order.getStatus() != CheckerOrder.CheckerOrderStatus.VERIFIED) {
+            throw new ConflictException(
+                    "Order " + orderId + " is " + order.getStatus() + ", not VERIFIED — nothing to retry."
+                            + " Only orders stuck between payment and provisioning can be retried here.");
+        }
+
+        log.info("[CHECKER] Manual retry requested for stuck order: orderId={}", orderId);
+
+        try {
+            provisionFromStock(order);
+        } catch (UpstreamApiException ex) {
+            log.warn("[CHECKER] Retry still failed (likely still out of stock): orderId={} error={}",
+                    orderId, ex.getMessage());
+            return toResponse(checkerOrderRepository.findById(orderId).orElseThrow());
+        } catch (Exception ex) {
+            log.error("[CHECKER] Retry failed unexpectedly: orderId={} error={}", orderId, ex.getMessage(), ex);
+            markCheckerOrderFailed(orderId, "Retry failed: " + ex.getMessage());
+            return toResponse(checkerOrderRepository.findById(orderId).orElseThrow());
+        }
+
+        CheckerOrder refreshed = checkerOrderRepository.findById(orderId).orElseThrow();
+        try {
+            deliverCredentials(refreshed);
+        } catch (Exception ex) {
+            log.error("[CHECKER] Order provisioned on retry but SMS delivery failed: orderId={} error={}",
+                    orderId, ex.getMessage(), ex);
+        }
+        return toResponse(refreshed);
+    }
+
+    /**
+     * Manually forces a specific order to COMPLETED using a specific stock
+     * row the admin already has in hand (e.g. a code bought manually outside
+     * the automated stock system, or one they're pasting in on the spot to
+     * fulfil a customer who's been waiting). Bypasses findAvailableForUpdate
+     * entirely — the admin is choosing the exact code, not drawing the next
+     * one off the queue.
+     */
+    @Transactional
+    public CheckerOrderResponse manuallyCompleteOrder(Long orderId, String serial, String pin,
+                                                        String examDate, String resultsLink) {
+        CheckerOrder order = checkerOrderRepository.findById(orderId)
+                .orElseThrow(() -> new ResourceNotFoundException("Checker order not found: " + orderId));
+
+        if (order.getStatus() == CheckerOrder.CheckerOrderStatus.COMPLETED) {
+            throw new ConflictException("Order " + orderId + " is already COMPLETED.");
+        }
+
+        order.setSerial(serial);
+        order.setPin(pin);
+        order.setExamDate(examDate);
+        order.setResultsLink(resultsLink);
+        order.setStatus(CheckerOrder.CheckerOrderStatus.COMPLETED);
+        order.setFailureReason(null);
+        checkerOrderRepository.save(order);
+
+        log.info("[CHECKER] ✔ Manually completed by admin: orderId={} serial={}", orderId, serial);
+
+        try {
+            deliverCredentials(order);
+        } catch (Exception ex) {
+            log.error("[CHECKER] Manually completed but SMS delivery failed: orderId={} error={}",
+                    orderId, ex.getMessage(), ex);
+        }
+        return toResponse(order);
+    }
+
+    /**
+     * Runs every 5 minutes. Sweeps up any order stuck at VERIFIED for more
+     * than 2 minutes (giving the normal synchronous webhook path plenty of
+     * time to finish first) and retries provisioning automatically. This is
+     * the safety net that didn't exist before — previously a stuck order
+     * stayed stuck forever with nothing coming back to check on it.
+     */
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 5 * 60 * 1000)
+    public void reconcileStuckOrders() {
+        List<CheckerOrder> stuck = findStuckOrders();
+        if (stuck.isEmpty()) return;
+
+        LocalDateTime cutoff = LocalDateTime.now().minusMinutes(2);
+        List<CheckerOrder> readyToRetry = stuck.stream()
+                .filter(o -> o.getCreatedAt().isBefore(cutoff))
+                .toList();
+
+        if (readyToRetry.isEmpty()) return;
+
+        log.info("[CHECKER] Reconciliation sweep: {} order(s) stuck at VERIFIED, retrying", readyToRetry.size());
+        for (CheckerOrder order : readyToRetry) {
+            try {
+                retryStuckOrder(order.getId());
+            } catch (Exception ex) {
+                log.error("[CHECKER] Reconciliation retry failed: orderId={} error={}",
+                        order.getId(), ex.getMessage(), ex);
+            }
+        }
     }
 
     // ── Wallet purchase (synchronous) ─────────────────────────────────────────

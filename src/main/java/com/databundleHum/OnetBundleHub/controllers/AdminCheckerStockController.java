@@ -1,7 +1,10 @@
 package com.databundleHum.OnetBundleHub.controllers;
 
+import com.databundleHum.OnetBundleHub.entity.CheckerOrder;
 import com.databundleHum.OnetBundleHub.entity.CheckerPricing;
 import com.databundleHum.OnetBundleHub.entity.CheckerStock;
+import com.databundleHum.OnetBundleHub.dtos.response.CheckerOrderResponse;
+import com.databundleHum.OnetBundleHub.repos.CheckerOrderRepository;
 import com.databundleHum.OnetBundleHub.repos.CheckerPricingRepository;
 import com.databundleHum.OnetBundleHub.repos.CheckerStockRepository;
 import com.databundleHum.OnetBundleHub.security.ConflictException;
@@ -9,6 +12,7 @@ import com.databundleHum.OnetBundleHub.security.ResourceNotFoundException;
 import com.databundleHum.OnetBundleHub.security.UpstreamApiException;
 import com.databundleHum.OnetBundleHub.security.UserPrincipal;
 import com.databundleHum.OnetBundleHub.services.BigDreamsDataService;
+import com.databundleHum.OnetBundleHub.services.CheckerService;
 import com.databundleHum.OnetBundleHub.services.DataBossHubService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
@@ -61,6 +65,8 @@ public class AdminCheckerStockController {
 
     private final CheckerStockRepository   checkerStockRepository;
     private final CheckerPricingRepository checkerPricingRepository;
+    private final CheckerOrderRepository   checkerOrderRepository;
+    private final CheckerService           checkerService;
     private final DataBossHubService       dataBossHubService;
     private final BigDreamsDataService     bigDreamsDataService;
 
@@ -93,6 +99,68 @@ public class AdminCheckerStockController {
     }
 
     public record StockSummary(CheckerPricing.ExamType examType, long available, long used) {}
+
+    // ── Stuck orders (paid but never provisioned) ───────────────────────────────
+
+    /**
+     * GET /api/admin/checker-stock/stuck-orders
+     * Orders where payment cleared (VERIFIED) but no code was ever handed
+     * out — customer paid, sees "Pending" forever, and nothing else in the
+     * system was coming back to fix it before this endpoint existed. A
+     * background sweep now retries these automatically every 5 minutes
+     * (see CheckerService.reconcileStuckOrders), but this lets you find and
+     * fix one immediately rather than waiting on the sweep.
+     */
+    @GetMapping("/stuck-orders")
+    public ResponseEntity<List<CheckerOrder>> getStuckOrders() {
+        List<CheckerOrder> stuck = checkerService.findStuckOrders();
+        log.info("[ADMIN-CHECKER-STOCK] Found {} stuck (VERIFIED) checker order(s)", stuck.size());
+        return ResponseEntity.ok(stuck);
+    }
+
+    /**
+     * POST /api/admin/checker-stock/stuck-orders/{orderId}/retry
+     * Re-runs provisioning for one stuck order right now. If stock is
+     * available for that exam type it completes immediately and the
+     * customer can see their code the moment you check the order again. If
+     * stock is still empty it fails again with the same "out of stock"
+     * reason — restock first, then retry.
+     */
+    @PostMapping("/stuck-orders/{orderId}/retry")
+    public ResponseEntity<CheckerOrderResponse> retryStuckOrder(@PathVariable Long orderId) {
+        log.info("[ADMIN-CHECKER-STOCK] Manual retry requested: orderId={}", orderId);
+        CheckerOrderResponse response = checkerService.retryStuckOrder(orderId);
+        log.info("[ADMIN-CHECKER-STOCK] Retry result: orderId={} status={}", orderId, response.getStatus());
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * POST /api/admin/checker-stock/stuck-orders/{orderId}/complete-manually
+     * Forces a specific order straight to COMPLETED using a code you supply
+     * directly in the request, bypassing the stock queue entirely. Use this
+     * when you need to hand a specific customer a specific code right now —
+     * e.g. one you already have on hand outside the automated stock table —
+     * rather than drawing whatever's next in the queue.
+     */
+    @PostMapping("/stuck-orders/{orderId}/complete-manually")
+    public ResponseEntity<CheckerOrderResponse> completeOrderManually(
+            @PathVariable Long orderId, @Valid @RequestBody ManualCompleteRequest request) {
+        log.info("[ADMIN-CHECKER-STOCK] Manual completion requested: orderId={}", orderId);
+        CheckerOrderResponse response = checkerService.manuallyCompleteOrder(
+                orderId, request.getSerial(), request.getPin(), request.getExamDate(), request.getResultsLink());
+        log.info("[ADMIN-CHECKER-STOCK] ✔ Manually completed: orderId={}", orderId);
+        return ResponseEntity.ok(response);
+    }
+
+    @Data
+    public static class ManualCompleteRequest {
+        @NotNull
+        private String serial;
+        @NotNull
+        private String pin;
+        private String examDate;
+        private String resultsLink;
+    }
 
     /**
      * GET /api/admin/checker-stock?examType=BECE&used=false&page=0&size=20
