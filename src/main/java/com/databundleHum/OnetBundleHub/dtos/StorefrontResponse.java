@@ -72,5 +72,13 @@ public class StorefrontResponse {
         private String     examType;
         /** The reseller's custom selling price — what the customer pays. */
         private BigDecimal sellingPriceGhc;
+        /**
+         * False when there are zero unused CheckerStock rows for this exam
+         * type right now. Storefront customers previously had no way to
+         * know an exam type was unpurchasable until after paying — the
+         * order would then fail and refund, which is the correct outcome
+         * but a bad experience when it could have been shown upfront.
+         */
+        private boolean inStock;
     }
 }

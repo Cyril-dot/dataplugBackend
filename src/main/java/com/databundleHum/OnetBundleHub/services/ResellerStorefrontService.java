@@ -84,6 +84,7 @@ public class ResellerStorefrontService {
     private final CheckerOrderRepository            checkerOrderRepository;
     private final CheckerPricingRepository          checkerPricingRepository;
     private final CheckerResellerPricingRepository  checkerResellerPricingRepository;
+    private final CheckerStockRepository            checkerStockRepository;
     private final CheckerService                    checkerService;
 
     // ── Storefront browse ─────────────────────────────────────────────────────
@@ -116,6 +117,7 @@ public class ResellerStorefrontService {
                 .map(p -> StorefrontResponse.CheckerItem.builder()
                         .examType(p.getExamType().name())
                         .sellingPriceGhc(p.getSellingPriceGhc())
+                        .inStock(checkerStockRepository.countByExamTypeAndUsedFalse(p.getExamType()) > 0)
                         .build())
                 .collect(Collectors.toList());
 
