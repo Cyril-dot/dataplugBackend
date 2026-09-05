@@ -12,6 +12,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -51,7 +52,9 @@ public class CheckerController {
     @GetMapping("/pricing")
     public ResponseEntity<List<CheckerPublicPricingResponse>> getPublicPricing() {
         log.info("[CHECKER-CONTROLLER] GET /pricing (public)");
-        return ResponseEntity.ok(checkerService.getPublicPricing());
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(checkerService.getPublicPricing());
     }
 
     // ── Guest flow ────────────────────────────────────────────────────────────
@@ -67,7 +70,14 @@ public class CheckerController {
     @GetMapping("/guest/status")
     public ResponseEntity<CheckerOrderResponse> getGuestOrderStatus(@RequestParam String reference) {
         log.info("[CHECKER-CONTROLLER] GET /guest/status: reference={}", reference);
-        return ResponseEntity.ok(checkerService.getCheckerOrderStatusByRef(reference));
+        // FIX: order status is exactly the kind of response a browser/CDN/
+        // intermediate cache will happily reuse on repeat polling if not
+        // told otherwise — which would show a stale PENDING forever even
+        // after the backend genuinely moves to COMPLETED. No caching is
+        // ever correct for this endpoint.
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(checkerService.getCheckerOrderStatusByRef(reference));
     }
 
     // ── Wallet flow ───────────────────────────────────────────────────────────
@@ -87,6 +97,8 @@ public class CheckerController {
     public ResponseEntity<Page<CheckerOrderResponse>> getHistory(Pageable pageable) {
         UUID userId = currentUserId();
         log.info("[CHECKER-CONTROLLER] GET /history: userId={}", userId);
-        return ResponseEntity.ok(checkerService.getCheckerHistory(userId, pageable));
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(checkerService.getCheckerHistory(userId, pageable));
     }
 }
