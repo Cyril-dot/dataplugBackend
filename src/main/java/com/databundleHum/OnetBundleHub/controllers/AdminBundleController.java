@@ -57,6 +57,16 @@ public class AdminBundleController {
      * exact expected values (mtn/telecel/airteltigo, or something else
      * entirely) are unconfirmed until a real catalog response is inspected.
      */
+    /**
+     * GET /api/admin/big-dreams/balance
+     * Read the platform's Big Dreams provider wallet balance. The API key
+     * remains server-side; this endpoint is restricted to SUPER_ADMIN.
+     */
+    @GetMapping("/big-dreams/balance")
+    public ResponseEntity<BigDreamsDataService.BalanceResult> getBigDreamsBalance() {
+        return ResponseEntity.ok(bigDreamsDataService.checkBalance());
+    }
+
     @GetMapping(params = "network")
     public ResponseEntity<List<BigDreamsDataService.BundleListing>> getBundlesByNetwork(
             @RequestParam String network) {
