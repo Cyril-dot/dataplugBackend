@@ -81,6 +81,9 @@ import java.util.UUID;
 public class OrderService {
 
     private static final int DUPLICATE_WINDOW_SECONDS = 30;
+    private static final String MTN_RECIPIENT_NOT_APPROVED_MESSAGE =
+            "This MTN number has not been verified to purchase MTN data yet. "
+                    + "Please try again later or use another MTN number.";
 
     /** 10% processing charge passed on to the customer at the point of payment. */
     private static final BigDecimal PROCESSING_CHARGE_RATE = new BigDecimal("0.10");
@@ -386,6 +389,7 @@ public class OrderService {
 
         BigDecimal price = pricingService.resolvePriceForUser(user, settings);
 
+        rejectPreviouslyUnapprovedMtnRecipient(userId, request);
         rejectIfDuplicate(userId, request.getPhoneNumber(), request.getNetwork(),
                 request.getCapacityGb(), "USER");
 
@@ -414,6 +418,9 @@ public class OrderService {
             affiliateCommissionService.processCommission(order);
         } catch (UpstreamApiException ex) {
             handleProvisioningFailure(order.getId(), user, price, ex);
+            if (isMtnRecipientApprovalFailure(ex)) {
+                throw new ValidationException(MTN_RECIPIENT_NOT_APPROVED_MESSAGE);
+            }
         }
 
         return toOrderResponse(orderRepository.findById(order.getId()).orElseThrow());
@@ -442,6 +449,34 @@ public class OrderService {
                 .build();
     }
 
+    /**
+     * Big Dreams has no separate approval-check endpoint. Once it tells us a
+     * recipient is awaiting MTN approval, remember that rejection and stop
+     * sending/debiting repeated attempts until the provider can accept it.
+     */
+    private void rejectPreviouslyUnapprovedMtnRecipient(UUID userId, WalletOrderRequest request) {
+        if (request.getNetwork() != PlatformSettings.Network.MTN) return;
+
+        boolean previouslyRejected = orderRepository
+                .findFirstByUserIdAndPhoneNumberAndNetworkAndStatusAndFailureReasonContainingOrderByCreatedAtDesc(
+                        userId,
+                        request.getPhoneNumber(),
+                        PlatformSettings.Network.MTN,
+                        Order.OrderStatus.FAILED,
+                        "not approved")
+                .isPresent();
+        if (previouslyRejected) {
+            log.info("[ORDER] Preflight blocked unapproved MTN recipient: userId={} phone={}",
+                    userId, request.getPhoneNumber());
+            throw new ValidationException(MTN_RECIPIENT_NOT_APPROVED_MESSAGE);
+        }
+    }
+
+    private boolean isMtnRecipientApprovalFailure(UpstreamApiException ex) {
+        String message = ex.getMessage() == null ? "" : ex.getMessage().toLowerCase();
+        return message.contains("not approved") && message.contains("sent for approval");
+    }
+
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     protected void handleProvisioningFailure(Long orderId, User user, BigDecimal price, UpstreamApiException ex) {
         Order order = orderRepository.findById(orderId).orElseThrow();
@@ -468,6 +503,7 @@ public class OrderService {
                 request.getNetwork(), request.getCapacityGb());
         BigDecimal       costPrice = settings.getResellerPriceGhc();
 
+        rejectPreviouslyUnapprovedMtnRecipient(userId, request);
         rejectIfDuplicate(userId, request.getPhoneNumber(), request.getNetwork(),
                 request.getCapacityGb(), "RESELLER");
 
@@ -525,16 +561,21 @@ public class OrderService {
             log.error("[ORDER] Big Dreams provision failed for reseller order: " +
                             "orderId={} error={}",
                     order.getId(), ex.getMessage());
-            markResellerOrderFailed(order.getId(), user, costPrice);
+            markResellerOrderFailed(order.getId(), user, costPrice, ex);
+            if (isMtnRecipientApprovalFailure(ex)) {
+                throw new ValidationException(MTN_RECIPIENT_NOT_APPROVED_MESSAGE);
+            }
         }
 
         return toOrderResponse(orderRepository.findById(order.getId()).orElseThrow());
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    protected void markResellerOrderFailed(Long orderId, User user, BigDecimal costPrice) {
+    protected void markResellerOrderFailed(Long orderId, User user, BigDecimal costPrice,
+                                           UpstreamApiException ex) {
         Order order = orderRepository.findById(orderId).orElseThrow();
         order.setStatus(Order.OrderStatus.FAILED);
+        order.setFailureReason(ex.getMessage());
         orderRepository.save(order);
 
         walletService.credit(user.getId(), costPrice, TransactionType.REFUND,

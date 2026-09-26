@@ -17,6 +17,15 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
 
     Optional<Order> findByPaystackRef(String paystackRef);
 
+    /** Finds the latest provider rejection for a recipient awaiting MTN approval. */
+    Optional<Order> findFirstByUserIdAndPhoneNumberAndNetworkAndStatusAndFailureReasonContainingOrderByCreatedAtDesc(
+            UUID userId,
+            String phoneNumber,
+            PlatformSettings.Network network,
+            Order.OrderStatus status,
+            String failureReasonFragment
+    );
+
     /** Look up orders by Big Dreams Data reference — used for reconciliation. */
     List<Order> findByDbhReference(String dbhReference);
 
