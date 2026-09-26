@@ -75,7 +75,7 @@ public class ResellerStorefrontService {
     private final UserRepository             userRepository;
     private final WalletService              walletService;
     private final KorapayService             korapayService;
-    private final DataPrimoService           dataPrimoService;
+    private final BigDreamsDataService          bigDreamsDataService;
     private final NotificationService        notificationService;
     private final AppConfig appConfig;
     private final FrontendUrlResolver frontendUrlResolver;
@@ -632,27 +632,26 @@ public class ResellerStorefrontService {
                 .build();
     }
 
-    // ── DataPrimo bundle provisioning helper ──────────────────────────────────
-
+    // ── Big Dreams bundle provisioning helper ────────────────────────────────
     private void provisionOrder(Order order) {
-        PlatformSettings settings = findActiveSettingsOrThrow(order.getNetwork(), order.getCapacityGb());
-
-        String productId = settings.getDataprimoProductId();
-        String network    = settings.getDataprimoNetwork();
-
-        log.info("[STOREFRONT] provisionOrder: orderId={} network={} capacityGb={} → " +
-                        "dataprimoProductId={} dataprimoNetwork={}",
-                order.getId(), order.getNetwork(), order.getCapacityGb(), productId, network);
-
-        if (productId == null || productId.isBlank() || network == null || network.isBlank()) {
-            log.error("[STOREFRONT] No DataPrimo catalog mapping for orderId={} network={} capacityGb={}",
-                    order.getId(), order.getNetwork(), order.getCapacityGb());
-            throw new UpstreamApiException(
-                    "Bundle network=" + order.getNetwork() + " capacityGb=" + order.getCapacityGb()
-                            + " has no DataPrimo catalog mapping — cannot provision orderId=" + order.getId());
+        String providerNetwork = switch (order.getNetwork()) {
+            case MTN -> "mtn";
+            case TELECEL -> "telecel";
+            case AIRTELTIGO -> "ishare";
+        };
+        if (order.getCapacityGb().stripTrailingZeros().scale() > 0) {
+            throw new UpstreamApiException("Big Dreams only supports whole-number GB packages: "
+                    + order.getCapacityGb());
         }
-
-        dataPrimoService.purchase(order, productId, network);
+        String providerOrderId = "datapack-" + order.getId();
+        BigDreamsDataService.PlaceOrderResult result = bigDreamsDataService.placeOrder(
+                providerNetwork, order.getPhoneNumber(), order.getCapacityGb().intValueExact(), providerOrderId);
+        order.setDbhPurchaseId(result.transactionId());
+        order.setDbhReference(result.reference() != null ? result.reference() : result.orderId());
+        order.setStatus(Order.OrderStatus.PENDING);
+        orderRepository.save(order);
+        log.info("[STOREFRONT] Big Dreams accepted orderId={} providerOrderId={} reference={} status={}",
+                order.getId(), result.orderId(), result.reference(), result.status());
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────

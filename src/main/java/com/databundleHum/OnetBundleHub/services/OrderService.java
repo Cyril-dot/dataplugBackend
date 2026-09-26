@@ -39,7 +39,7 @@ import java.util.UUID;
 
 /**
  * Handles all order flows:
- *  - Guest checkout  (Korapay Checkout Redirect → webhook → DataPrimo provision)
+ *  - Guest checkout  (Korapay Checkout Redirect → webhook → Big Dreams provision)
  *  - User wallet purchase
  *  - Reseller wallet purchase (wholesale price)
  *  - Order status queries
@@ -107,7 +107,7 @@ public class OrderService {
     private final WalletTopUpRepository       walletTopUpRepository;
     private final WalletService               walletService;
     private final KorapayService              korapayService;
-    private final DataPrimoService            dataPrimoService;
+    private final BigDreamsDataService          bigDreamsDataService;
     private final NotificationService         notificationService;
     private final AffiliateCommissionService  affiliateCommissionService;
     private final AppConfig                   appConfig;
@@ -521,7 +521,7 @@ public class OrderService {
             provisionOrder(order);
             affiliateCommissionService.processCommission(order);
         } catch (UpstreamApiException ex) {
-            log.error("[ORDER] DataPrimo provision failed for reseller order: " +
+            log.error("[ORDER] Big Dreams provision failed for reseller order: " +
                             "orderId={} error={}",
                     order.getId(), ex.getMessage());
             markResellerOrderFailed(order.getId(), user, costPrice);
@@ -546,33 +546,35 @@ public class OrderService {
                 user.getEmail(), user.getFullName(), order.getId());
     }
 
-    // ── DataPrimo provisioning helper ─────────────────────────────────────────
-
+    // ── Big Dreams provisioning helper ────────────────────────────────────────
     /**
-     * Resolves this order's (network, capacityGb) to a DataPrimo
-     * productId/network via PlatformSettings, then calls DataPrimoService.
-     * Fails fast (before any HTTP call) if the bundle hasn't been
-     * catalog-mapped yet.
+     * Places the paid order through Big Dreams. PlatformSettings remains the
+     * source of truth for availability and customer/reseller prices; Big Dreams
+     * is responsible only for delivery and its own provider-wallet charge.
+     * The internal order ID is sent as Big Dreams' optional order_id so retries
+     * cannot charge the provider twice.
      */
     private void provisionOrder(Order order) {
-        PlatformSettings settings = getActiveSettings(order.getNetwork(), order.getCapacityGb());
-
-        String productId = settings.getDataprimoProductId();
-        String network    = settings.getDataprimoNetwork();
-
-        log.info("[ORDER] provisionOrder: orderId={} network={} capacityGb={} → dataprimoProductId={} dataprimoNetwork={}",
-                order.getId(), order.getNetwork(), order.getCapacityGb(), productId, network);
-
-        if (productId == null || productId.isBlank() || network == null || network.isBlank()) {
-            log.error("[ORDER] No DataPrimo catalog mapping for orderId={} network={} capacityGb={}",
-                    order.getId(), order.getNetwork(), order.getCapacityGb());
-            throw new UpstreamApiException(
-                    "Bundle network=" + order.getNetwork() + " capacityGb=" + order.getCapacityGb()
-                            + " has no DataPrimo catalog mapping (dataprimoProductId/dataprimoNetwork "
-                            + "not set on PlatformSettings) — cannot provision orderId=" + order.getId());
+        String providerNetwork = switch (order.getNetwork()) {
+            case MTN -> "mtn";
+            case TELECEL -> "telecel";
+            case AIRTELTIGO -> "ishare";
+        };
+        if (order.getCapacityGb().stripTrailingZeros().scale() > 0) {
+            throw new UpstreamApiException("Big Dreams only supports whole-number GB packages: "
+                    + order.getCapacityGb());
         }
-
-        dataPrimoService.purchase(order, productId, network);
+        String providerOrderId = "datapack-" + order.getId();
+        log.info("[ORDER] provisionOrder: orderId={} network={} providerNetwork={} capacityGb={} providerOrderId={}",
+                order.getId(), order.getNetwork(), providerNetwork, order.getCapacityGb(), providerOrderId);
+        BigDreamsDataService.PlaceOrderResult result = bigDreamsDataService.placeOrder(
+                providerNetwork, order.getPhoneNumber(), order.getCapacityGb().intValueExact(), providerOrderId);
+        order.setDbhPurchaseId(result.transactionId());
+        order.setDbhReference(result.reference() != null ? result.reference() : result.orderId());
+        order.setStatus(Order.OrderStatus.PENDING);
+        orderRepository.save(order);
+        log.info("[ORDER] Big Dreams accepted orderId={} providerOrderId={} reference={} status={}",
+                order.getId(), result.orderId(), result.reference(), result.status());
     }
 
     // ── Order queries ─────────────────────────────────────────────────────────

@@ -7,6 +7,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
@@ -15,6 +17,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import com.databundleHum.OnetBundleHub.entity.Order;
+import com.databundleHum.OnetBundleHub.repos.OrderRepository;
 
 /**
  * Facade over the Big Dreams Data Developer API.
@@ -57,6 +61,7 @@ public class BigDreamsDataService {
     @Qualifier("bigDreamsWebClient")
     private final WebClient bigDreamsWebClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final OrderRepository orderRepository;
 
     // ══════════════════════════════════════════════════════════════════════
     // Data bundles
@@ -421,6 +426,36 @@ public class BigDreamsDataService {
 
     public record OrderStatusResult(
             String orderId, String reference, String status, String failureReason, String createdAt, String updatedAt) {}
+
+    /** Poll accepted Big Dreams orders at the provider-documented 30–60 second cadence. */
+    @Scheduled(fixedDelay = 60_000L)
+    public void reconcilePendingOrders() {
+        List<Order> pending = orderRepository.findByStatus(Order.OrderStatus.PENDING).stream()
+                .filter(o -> o.getDbhReference() != null && !o.getDbhReference().isBlank())
+                .toList();
+        for (Order order : pending) {
+            try {
+                OrderStatusResult result = checkStatus(order.getDbhReference());
+                String status = result.status() == null ? "" : result.status().toLowerCase();
+                if (status.equals("completed")) {
+                    markProviderStatus(order, Order.OrderStatus.COMPLETED);
+                } else if (status.equals("failed") || status.equals("cancelled")) {
+                    markProviderStatus(order, Order.OrderStatus.FAILED);
+                    log.warn("[BIGDREAMS] Order failed: localOrderId={} reason={}",
+                            order.getId(), result.failureReason());
+                }
+            } catch (UpstreamApiException ex) {
+                log.warn("[BIGDREAMS] Status check unavailable: localOrderId={} reference={} error={}",
+                        order.getId(), order.getDbhReference(), ex.getMessage());
+            }
+        }
+    }
+
+    @Transactional
+    protected void markProviderStatus(Order order, Order.OrderStatus status) {
+        order.setStatus(status);
+        orderRepository.save(order);
+    }
 
     // ══════════════════════════════════════════════════════════════════════
     // AFA registration

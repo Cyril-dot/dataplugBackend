@@ -1,6 +1,6 @@
 package com.databundleHum.OnetBundleHub.controllers;
 
-import com.databundleHum.OnetBundleHub.services.DataPrimoService;
+import com.databundleHum.OnetBundleHub.services.BigDreamsDataService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -13,13 +13,8 @@ import java.util.Map;
 /**
  * ── MIGRATION FROM BIG DREAMS TO DATAPRIMO (2026-08-26) ──────────────────────
  *
- * bigDreamsService.fetchAvailableBundles() → dataPrimoService.fetchCatalog().
- *
- * IMPORTANT: unlike Big Dreams' BigDreamsBundleResponse (a clean, confirmed
- * DTO with sizeGb/buyingPriceGhc/etc.), DataPrimo's catalog field shape is
- * still UNCONFIRMED — see DataPrimoService.fetchCatalog()'s Javadoc. Rather
- * than guess field names into a typed DTO and risk silently mismapping
- * prices, this endpoint returns the raw catalog entries as-is for now.
+ * The admin catalog is read directly from Big Dreams' documented
+ * get_bundles action and returns the typed provider listing.
  *
  * TODO: once a real GET /catalog response has been inspected (check the
  * logged raw body from fetchCatalog() on first real call), replace
@@ -41,7 +36,7 @@ import java.util.Map;
 @PreAuthorize("hasRole('SUPER_ADMIN')")  // ✅ FIXED: was hasRole('ADMIN') — role is ROLE_SUPER_ADMIN
 public class AdminBundleController {
 
-    private final DataPrimoService dataPrimoService;
+    private final BigDreamsDataService bigDreamsDataService;
 
     /**
      * GET /api/admin/bundles
@@ -49,9 +44,9 @@ public class AdminBundleController {
      * see class Javadoc on why this isn't a typed DTO yet).
      */
     @GetMapping
-    public ResponseEntity<List<Map<String, Object>>> getAllBundles() {
+    public ResponseEntity<List<BigDreamsDataService.BundleListing>> getAllBundles() {
         log.info("[ADMIN-BUNDLES] Fetching full DataPrimo catalog");
-        List<Map<String, Object>> bundles = dataPrimoService.fetchCatalog();
+        List<BigDreamsDataService.BundleListing> bundles = bigDreamsDataService.getBundles(null);
         log.info("[ADMIN-BUNDLES] Returned {} bundle(s)", bundles.size());
         return ResponseEntity.ok(bundles);
     }
@@ -63,16 +58,14 @@ public class AdminBundleController {
      * entirely) are unconfirmed until a real catalog response is inspected.
      */
     @GetMapping(params = "network")
-    public ResponseEntity<List<Map<String, Object>>> getBundlesByNetwork(
+    public ResponseEntity<List<BigDreamsDataService.BundleListing>> getBundlesByNetwork(
             @RequestParam String network) {
         log.info("[ADMIN-BUNDLES] Fetching DataPrimo catalog filtered by network={}", network);
 
-        List<Map<String, Object>> all = dataPrimoService.fetchCatalog();
-        List<Map<String, Object>> filtered = all.stream()
-                .filter(entry -> {
-                    String entryNetwork = dataPrimoService.extractNetwork(entry);
-                    return entryNetwork != null && entryNetwork.equalsIgnoreCase(network);
-                })
+        String providerNetwork = network.equalsIgnoreCase("airteltigo") ? "ishare" : network.toLowerCase();
+        List<BigDreamsDataService.BundleListing> all = bigDreamsDataService.getBundles(null);
+        List<BigDreamsDataService.BundleListing> filtered = all.stream()
+                .filter(entry -> entry.network() != null && entry.network().equalsIgnoreCase(providerNetwork))
                 .toList();
 
         log.info("[ADMIN-BUNDLES] network={} matched {} of {} bundle(s)",
