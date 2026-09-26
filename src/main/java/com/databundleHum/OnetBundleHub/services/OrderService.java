@@ -571,7 +571,13 @@ public class OrderService {
                 providerNetwork, order.getPhoneNumber(), order.getCapacityGb().intValueExact(), providerOrderId);
         order.setDbhPurchaseId(result.transactionId());
         order.setDbhReference(result.reference() != null ? result.reference() : result.orderId());
-        order.setStatus(Order.OrderStatus.PENDING);
+        String providerStatus = result.status() == null ? "" : result.status().trim().toLowerCase()
+                .replace('-', '_').replace(' ', '_');
+        order.setStatus(providerStatus.equals("completed") || providerStatus.equals("complete")
+                || providerStatus.equals("delivered") || providerStatus.equals("success")
+                || providerStatus.equals("successful") || providerStatus.equals("successful_delivery")
+                || providerStatus.equals("delivery_successful") || providerStatus.equals("done")
+                ? Order.OrderStatus.COMPLETED : Order.OrderStatus.PENDING);
         orderRepository.save(order);
         log.info("[ORDER] Big Dreams accepted orderId={} providerOrderId={} reference={} status={}",
                 order.getId(), result.orderId(), result.reference(), result.status());

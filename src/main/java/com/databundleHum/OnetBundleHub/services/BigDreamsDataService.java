@@ -436,10 +436,12 @@ public class BigDreamsDataService {
         for (Order order : pending) {
             try {
                 OrderStatusResult result = checkStatus(order.getDbhReference());
-                String status = result.status() == null ? "" : result.status().toLowerCase();
-                if (status.equals("completed")) {
+                String status = normalizeStatus(result.status());
+                if (isSuccessfulStatus(status)) {
                     markProviderStatus(order, Order.OrderStatus.COMPLETED);
-                } else if (status.equals("failed") || status.equals("cancelled")) {
+                    log.info("[BIGDREAMS] Order completed: localOrderId={} reference={} providerStatus={}",
+                            order.getId(), order.getDbhReference(), status);
+                } else if (isFailedStatus(status)) {
                     markProviderStatus(order, Order.OrderStatus.FAILED);
                     log.warn("[BIGDREAMS] Order failed: localOrderId={} reason={}",
                             order.getId(), result.failureReason());
@@ -455,6 +457,23 @@ public class BigDreamsDataService {
     protected void markProviderStatus(Order order, Order.OrderStatus status) {
         order.setStatus(status);
         orderRepository.save(order);
+    }
+
+    private String normalizeStatus(String status) {
+        return status == null ? "" : status.trim().toLowerCase().replace('-', '_').replace(' ', '_');
+    }
+
+    private boolean isSuccessfulStatus(String status) {
+        return status.equals("completed") || status.equals("complete")
+                || status.equals("delivered") || status.equals("success")
+                || status.equals("successful") || status.equals("successful_delivery")
+                || status.equals("delivery_successful") || status.equals("done");
+    }
+
+    private boolean isFailedStatus(String status) {
+        return status.equals("failed") || status.equals("failure")
+                || status.equals("cancelled") || status.equals("canceled")
+                || status.equals("rejected") || status.equals("declined");
     }
 
     // ══════════════════════════════════════════════════════════════════════
