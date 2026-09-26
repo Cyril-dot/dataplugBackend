@@ -75,6 +75,9 @@ public class OrderResponse {
     /** Order.OrderStatus.name() — "PENDING", "VERIFIED", "DELIVERED", "FAILED" */
     private String     status;
 
+    /** Provider/platform explanation when the order failed. */
+    private String     failureReason;
+
     /** True when placed without a user account (Paystack guest checkout). */
     private boolean    guest;
 

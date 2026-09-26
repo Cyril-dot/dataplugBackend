@@ -446,6 +446,7 @@ public class OrderService {
     protected void handleProvisioningFailure(Long orderId, User user, BigDecimal price, UpstreamApiException ex) {
         Order order = orderRepository.findById(orderId).orElseThrow();
         order.setStatus(Order.OrderStatus.FAILED);
+        order.setFailureReason(ex.getMessage());
         orderRepository.save(order);
         walletService.credit(user.getId(), price, TransactionType.REFUND,
                 "Refund: failed bundle delivery for order #" + order.getId(), null);
@@ -697,6 +698,7 @@ public class OrderService {
                 .paymentMethod(o.getPaymentMethod().name())
                 .paystackRef(o.getPaystackRef())
                 .status(o.getStatus().name())
+                .failureReason(o.getFailureReason())
                 .guest(o.isGuest())
                 .storefrontOrder(o.isStorefrontOrder())
                 .createdAt(o.getCreatedAt())

@@ -18,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import com.databundleHum.OnetBundleHub.entity.Order;
+import com.databundleHum.OnetBundleHub.entity.WalletTransaction.TransactionType;
 import com.databundleHum.OnetBundleHub.repos.OrderRepository;
 
 /**
@@ -62,6 +63,7 @@ public class BigDreamsDataService {
     private final WebClient bigDreamsWebClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final OrderRepository orderRepository;
+    private final WalletService walletService;
 
     // ══════════════════════════════════════════════════════════════════════
     // Data bundles
@@ -442,7 +444,7 @@ public class BigDreamsDataService {
                     log.info("[BIGDREAMS] Order completed: localOrderId={} reference={} providerStatus={}",
                             order.getId(), order.getDbhReference(), status);
                 } else if (isFailedStatus(status)) {
-                    markProviderStatus(order, Order.OrderStatus.FAILED);
+                    markProviderFailure(order, result.failureReason());
                     log.warn("[BIGDREAMS] Order failed: localOrderId={} reason={}",
                             order.getId(), result.failureReason());
                 }
@@ -457,6 +459,26 @@ public class BigDreamsDataService {
     protected void markProviderStatus(Order order, Order.OrderStatus status) {
         order.setStatus(status);
         orderRepository.save(order);
+    }
+
+    /**
+     * A provider can accept an order first and reject it later. Keep that
+     * reason on the order and refund the platform wallet for wallet-funded
+     * purchases; the synchronous rejection path is handled by OrderService.
+     */
+    @Transactional
+    protected void markProviderFailure(Order order, String failureReason) {
+        if (order.getStatus() != Order.OrderStatus.PENDING) return;
+        order.setStatus(Order.OrderStatus.FAILED);
+        order.setFailureReason(failureReason == null || failureReason.isBlank()
+                ? "Provider rejected the order without a reason."
+                : failureReason.substring(0, Math.min(500, failureReason.length())));
+        orderRepository.save(order);
+
+        if (order.getPaymentMethod() == Order.PaymentMethod.WALLET && order.getUser() != null) {
+            walletService.credit(order.getUser().getId(), order.getCostPriceGhc(), TransactionType.REFUND,
+                    "Refund: provider failed bundle delivery for order #" + order.getId(), null);
+        }
     }
 
     private String normalizeStatus(String status) {

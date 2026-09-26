@@ -153,6 +153,10 @@ public class Order {
     @Builder.Default
     private OrderStatus status = OrderStatus.PENDING;
 
+    /** Provider or platform explanation when delivery ends in FAILED. */
+    @Column(name = "failure_reason", length = 500)
+    private String failureReason;
+
     // ── Order origin flags ────────────────────────────────────────────────────
 
     /**
