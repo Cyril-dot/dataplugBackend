@@ -652,6 +652,10 @@ public class ResellerStorefrontService {
 
     // ── Big Dreams bundle provisioning helper ────────────────────────────────
     private void provisionOrder(Order order) {
+        // Final fail-closed check: this is the last boundary before a provider
+        // push, so paid guest and storefront paths cannot bypass verification.
+        unverifiedRecipientService.assertOrderAllowedBeforeProviderPush(
+                order.getPhoneNumber(), order.getNetwork());
         String providerNetwork = switch (order.getNetwork()) {
             case MTN -> "mtn";
             case TELECEL -> "telecel";

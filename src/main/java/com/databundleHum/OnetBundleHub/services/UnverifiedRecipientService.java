@@ -5,6 +5,7 @@ import com.databundleHum.OnetBundleHub.entity.UnverifiedRecipient;
 import com.databundleHum.OnetBundleHub.dtos.response.RecipientVerificationResponse;
 import com.databundleHum.OnetBundleHub.repos.UnverifiedRecipientRepository;
 import com.databundleHum.OnetBundleHub.repos.UserRepository;
+import com.databundleHum.OnetBundleHub.security.UpstreamApiException;
 import com.databundleHum.OnetBundleHub.security.ValidationException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -34,8 +35,8 @@ public class UnverifiedRecipientService {
         UnverifiedRecipient item = repository.findByPhoneNumberAndNetwork(normalizedPhone, network).orElse(null);
         if (item == null) {
             return RecipientVerificationResponse.builder().phoneNumber(normalizedPhone)
-                    .network(network.name()).status("NOT_REPORTED").canPlaceOrder(true)
-                    .message("This number has not been submitted for MTN verification and is available for data delivery.")
+                    .network(network.name()).status("NOT_REPORTED").canPlaceOrder(false)
+                    .message("This MTN number has not been verified yet. Please complete verification before ordering.")
                     .build();
         }
         boolean canPlace = item.getStatus() == UnverifiedRecipient.ReviewStatus.VERIFIED;
@@ -48,12 +49,31 @@ public class UnverifiedRecipientService {
                 .verifiedBy(item.getVerifiedBy()).build();
     }
 
-    /** Blocks only numbers explicitly awaiting manual admin review. */
+    /**
+     * Fail-closed order guard. A missing verification record is not proof that
+     * an MTN recipient is deliverable; only an explicit VERIFIED decision may
+     * reach the provider.
+     */
     public void assertOrderAllowed(String phone, PlatformSettings.Network network) {
         RecipientVerificationResponse result = check(phone, network);
-        if (!result.isCanPlaceOrder() && ("UNVERIFIED".equals(result.getStatus())
-                || "SUBMITTED".equals(result.getStatus()))) {
-            throw new ValidationException("This number has been submitted for MTN verification. Please wait for verification or use another number.");
+        if (!result.isCanPlaceOrder()) {
+            String message = "NOT_REPORTED".equals(result.getStatus())
+                    ? "This MTN number has not been verified yet. Please complete verification before ordering."
+                    : "This number has been submitted for MTN verification. Please wait for verification or use another number.";
+            throw new ValidationException(message);
+        }
+    }
+
+    /**
+     * Same guard for the provider boundary. It is represented as an upstream
+     * failure so every paid flow marks the order failed and performs its normal
+     * refund path instead of leaving a debit or a VERIFIED order behind.
+     */
+    public void assertOrderAllowedBeforeProviderPush(String phone, PlatformSettings.Network network) {
+        try {
+            assertOrderAllowed(phone, network);
+        } catch (ValidationException ex) {
+            throw new UpstreamApiException(ex.getMessage(), ex);
         }
     }
 

@@ -626,6 +626,11 @@ public class OrderService {
      * order_id so retries cannot charge the share balance twice.
      */
     private void provisionOrder(Order order) {
+        // Final fail-closed check: the pre-order check can become stale or be
+        // bypassed by a direct API/webhook call. Never push to the provider
+        // unless the current database state is explicitly VERIFIED.
+        unverifiedRecipientService.assertOrderAllowedBeforeProviderPush(
+                order.getPhoneNumber(), order.getNetwork());
         String providerOrderId = "datapack-" + order.getId();
         BigDreamsDataService.ShareResult result;
         switch (order.getNetwork()) {
