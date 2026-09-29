@@ -6,6 +6,8 @@ import com.databundleHum.OnetBundleHub.dtos.response.*;
 import com.databundleHum.OnetBundleHub.entity.*;
 import com.databundleHum.OnetBundleHub.security.UserPrincipal;
 import com.databundleHum.OnetBundleHub.services.AdminService;
+import com.databundleHum.OnetBundleHub.services.UnverifiedRecipientService;
+import com.databundleHum.OnetBundleHub.entity.UnverifiedRecipient;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -18,6 +20,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.*;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -26,6 +30,8 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
 import java.util.UUID;
+import java.time.LocalDate;
+import java.util.List;
 
 /**
  * Super-Admin REST controller.
@@ -47,6 +53,7 @@ import java.util.UUID;
 public class AdminController {
 
     private final AdminService adminService;
+    private final UnverifiedRecipientService unverifiedRecipientService;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -58,6 +65,40 @@ public class AdminController {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         UserPrincipal principal = (UserPrincipal) auth.getPrincipal();
         return principal.userId();
+    }
+
+    @GetMapping("/unverified-recipients")
+    @Operation(summary = "List deduplicated failed recipient numbers for a day")
+    public ResponseEntity<List<UnverifiedRecipient>> getUnverifiedRecipients(
+            @RequestParam(required = false) LocalDate date) {
+        return ResponseEntity.ok(unverifiedRecipientService.daily(date == null ? LocalDate.now() : date));
+    }
+
+    @GetMapping("/unverified-recipients.csv")
+    @Operation(summary = "Download daily failed recipient CSV")
+    public ResponseEntity<byte[]> downloadUnverifiedRecipients(
+            @RequestParam(required = false) LocalDate date) {
+        LocalDate reportDate = date == null ? LocalDate.now() : date;
+        return ResponseEntity.ok().header(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=unverified-recipients-" + reportDate + ".csv")
+                .contentType(MediaType.parseMediaType("text/csv"))
+                .body(unverifiedRecipientService.csv(reportDate));
+    }
+
+    @PostMapping("/unverified-recipients/{id}/submit")
+    public ResponseEntity<UnverifiedRecipient> submitUnverifiedRecipient(@PathVariable Long id) {
+        return ResponseEntity.ok(unverifiedRecipientService.submit(id));
+    }
+
+    @PostMapping("/unverified-recipients/{id}/verify")
+    public ResponseEntity<UnverifiedRecipient> verifyUnverifiedRecipient(@PathVariable Long id) {
+        return ResponseEntity.ok(unverifiedRecipientService.markVerified(id, currentAdminId().toString()));
+    }
+
+    @PostMapping("/unverified-recipients/{id}/notify-account")
+    public ResponseEntity<Void> notifyFailedRecipientAccount(@PathVariable Long id) {
+        unverifiedRecipientService.notifySourceAccount(id);
+        return ResponseEntity.noContent().build();
     }
 
     // ── Dashboard ─────────────────────────────────────────────────────────────

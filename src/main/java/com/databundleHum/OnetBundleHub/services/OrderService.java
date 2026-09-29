@@ -112,6 +112,7 @@ public class OrderService {
     private final KorapayService              korapayService;
     private final BigDreamsDataService          bigDreamsDataService;
     private final NotificationService         notificationService;
+    private final UnverifiedRecipientService  unverifiedRecipientService;
     private final AffiliateCommissionService  affiliateCommissionService;
     private final AppConfig                   appConfig;
     private final FrontendUrlResolver          frontendUrlResolver;
@@ -199,7 +200,7 @@ public class OrderService {
         } catch (UpstreamApiException ex) {
             log.error("[ORDER] Bundle provision failed after Korapay payment: orderId={} ref={} error={}",
                     order.getId(), reference, ex.getMessage());
-            markOrderFailedAfterPaymentFailure(order);
+            markOrderFailedAfterPaymentFailure(order, ex);
         }
     }
 
@@ -222,9 +223,16 @@ public class OrderService {
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    protected void markOrderFailedAfterPaymentFailure(Order order) {
+    protected void markOrderFailedAfterPaymentFailure(Order order, UpstreamApiException ex) {
         order.setStatus(Order.OrderStatus.FAILED);
+        order.setFailureReason(ex.getMessage());
         orderRepository.save(order);
+
+        if (order.getNetwork() == PlatformSettings.Network.MTN && isMtnRecipientApprovalFailure(ex)) {
+            unverifiedRecipientService.recordFailure(order.getPhoneNumber(), order.getNetwork(), ex.getMessage(),
+                    order.getUser() == null ? null : order.getUser().getEmail(),
+                    order.getUser() == null ? null : order.getUser().getFullName());
+        }
 
         log.warn("[ORDER] Order marked FAILED after payment: orderId={}", order.getId());
 
@@ -483,6 +491,10 @@ public class OrderService {
         order.setStatus(Order.OrderStatus.FAILED);
         order.setFailureReason(ex.getMessage());
         orderRepository.save(order);
+        if (order.getNetwork() == PlatformSettings.Network.MTN && isMtnRecipientApprovalFailure(ex)) {
+            unverifiedRecipientService.recordFailure(order.getPhoneNumber(), order.getNetwork(), ex.getMessage(),
+                    user.getEmail(), user.getFullName());
+        }
         walletService.credit(user.getId(), price, TransactionType.REFUND,
                 "Refund: failed bundle delivery for order #" + order.getId(), null);
         notificationService.sendOrderFailedAlert(user.getEmail(), user.getFullName(), order.getId());
@@ -577,6 +589,10 @@ public class OrderService {
         order.setStatus(Order.OrderStatus.FAILED);
         order.setFailureReason(ex.getMessage());
         orderRepository.save(order);
+        if (order.getNetwork() == PlatformSettings.Network.MTN && isMtnRecipientApprovalFailure(ex)) {
+            unverifiedRecipientService.recordFailure(order.getPhoneNumber(), order.getNetwork(), ex.getMessage(),
+                    user.getEmail(), user.getFullName());
+        }
 
         walletService.credit(user.getId(), costPrice, TransactionType.REFUND,
                 "Refund: failed bundle delivery for order #" + order.getId(), null);
@@ -602,10 +618,17 @@ public class OrderService {
         switch (order.getNetwork()) {
             case MTN -> {
                 if (order.getCapacityGb().stripTrailingZeros().scale() > 0) {
-                    throw new UpstreamApiException("MTN Share bundles require a whole-number GB amount.");
+                    throw new UpstreamApiException("MTN bundles require a whole-number GB amount.");
                 }
-                result = bigDreamsDataService.shareMtn(order.getPhoneNumber(),
-                        order.getCapacityGb().intValueExact(), providerOrderId);
+                BigDreamsDataService.PlaceOrderResult placeOrder = bigDreamsDataService.placeOrder(
+                        "mtn", order.getPhoneNumber(), order.getCapacityGb().intValueExact(), providerOrderId);
+                order.setDbhPurchaseId(placeOrder.transactionId());
+                order.setDbhReference(placeOrder.reference() != null ? placeOrder.reference() : placeOrder.orderId());
+                order.setStatus(toOrderStatus(placeOrder.status()));
+                orderRepository.save(order);
+                log.info("[ORDER] Big Dreams regular MTN order accepted: orderId={} providerOrderId={} status={}",
+                        order.getId(), providerOrderId, placeOrder.status());
+                return;
             }
             case TELECEL -> result = bigDreamsDataService.shareTelecel(
                     order.getPhoneNumber(), order.getCapacityGb(), providerOrderId);
@@ -631,6 +654,15 @@ public class OrderService {
         orderRepository.save(order);
         log.info("[ORDER] Big Dreams share accepted orderId={} providerOrderId={} reference={} status={}",
                 order.getId(), providerOrderId, result.orderId(), result.status());
+    }
+
+    private Order.OrderStatus toOrderStatus(String status) {
+        String normalized = status == null ? "" : status.trim().toLowerCase()
+                .replace('-', '_').replace(' ', '_');
+        return normalized.equals("completed") || normalized.equals("complete")
+                || normalized.equals("delivered") || normalized.equals("success")
+                || normalized.equals("successful") || normalized.equals("done")
+                ? Order.OrderStatus.COMPLETED : Order.OrderStatus.PENDING;
     }
 
     // ── Order queries ─────────────────────────────────────────────────────────

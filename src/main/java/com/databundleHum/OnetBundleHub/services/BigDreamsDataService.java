@@ -404,50 +404,8 @@ public class BigDreamsDataService {
                 decimal(data, "balance_remaining"));
     }
 
-    /** share_mtn — send whole-number MTN Share data (GB) from the share balance. */
-    public ShareResult shareMtn(String recipient, int gb, String orderId) {
-        log.info("[BIGDREAMS] share_mtn: recipient={} gb={} orderId={}", recipient, gb, orderId);
-
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("action", "share_mtn");
-        body.put("recipient", recipient);
-        body.put("gb", gb);
-        if (orderId != null && !orderId.isBlank()) body.put("order_id", orderId);
-
-        JsonNode data = postForData(body, "share_mtn");
-        return new ShareResult(text(data, "order_id"), text(data, "recipient"),
-                decimal(data, "amount"), text(data, "unit"), text(data, "status"),
-                decimal(data, "balance_remaining"));
-    }
-
     public record ShareResult(
             String orderId, String recipient, BigDecimal amount, String unit, String status, BigDecimal balanceRemaining) {}
-
-    /**
-     * Read-only MTN allow-list probe used before checkout. The provider must
-     * support the check_mtn_recipient action; this method intentionally never
-     * calls share_mtn and therefore never submits a bundle or deducts share.
-     */
-    public MtnEligibilityResult checkMtnRecipient(String recipient) {
-        log.info("[BIGDREAMS][MTN_VERIFY] checking recipient={}", maskPhone(recipient));
-
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("action", "check_mtn_recipient");
-        body.put("recipient", recipient);
-
-        JsonNode data = postForData(body, "check_mtn_recipient");
-        boolean eligible = data.path("eligible").asBoolean(
-                data.path("approved").asBoolean(false));
-        String status = text(data, "status");
-        String message = text(data, "message");
-
-        log.info("[BIGDREAMS][MTN_VERIFY] result recipient={} eligible={} status={} message={}",
-                maskPhone(recipient), eligible, status, message);
-        return new MtnEligibilityResult(recipient, eligible, status, message);
-    }
-
-    public record MtnEligibilityResult(
-            String recipient, boolean eligible, String status, String message) {}
 
     // ══════════════════════════════════════════════════════════════════════
     // Order status
@@ -654,10 +612,5 @@ public class BigDreamsDataService {
         JsonNode v = node.path(field);
         if (v.isMissingNode() || v.isNull()) return null;
         return new BigDecimal(v.asText());
-    }
-
-    private String maskPhone(String phone) {
-        if (phone == null || phone.length() < 4) return "****";
-        return phone.substring(0, 2) + "******" + phone.substring(phone.length() - 2);
     }
 }

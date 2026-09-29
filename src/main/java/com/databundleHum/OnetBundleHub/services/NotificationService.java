@@ -87,6 +87,19 @@ public class NotificationService {
                         + "if payment was taken.\n\nTeam DBH");
     }
 
+    @Async
+    public void sendUnverifiedRecipientVerifiedAlert(String email, String fullName, String phone) {
+        sendEmail(email, fullName, "Recipient number marked verified",
+                "The recipient number " + phone + " has been marked verified by an administrator.\n\nTeam DBH");
+    }
+
+    @Async
+    public void sendFailedRecipientVerifiedAlert(String email, String fullName, String phone) {
+        sendEmail(email, fullName, "Your recipient number was verified",
+                "The recipient number " + phone + " from your failed data order has been reviewed and marked verified. "
+                        + "You may try the order again.\n\nTeam DBH");
+    }
+
     // ── Checker alerts (NEW) ────────────────────────────────────────────────────
 
     /**
