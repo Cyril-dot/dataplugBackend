@@ -96,6 +96,18 @@ public class WebhookController {
         String event = root.path("event").asText();
         log.info("[WEBHOOK] Event type: {}", event);
 
+        if ("refund.success".equals(event) || "refund.failed".equals(event)) {
+            String refundReference = dataNode.path("reference").asText(null);
+            String refundStatus = dataNode.path("status").asText(
+                    "refund.success".equals(event) ? "success" : "failed");
+            if (refundReference == null || refundReference.isBlank()) {
+                log.warn("[WEBHOOK] Refund event missing reference: event={}", event);
+                return ResponseEntity.badRequest().build();
+            }
+            orderService.updateKorapayRefundStatus(refundReference, refundStatus);
+            return ResponseEntity.ok().build();
+        }
+
         if (!"charge.success".equals(event)) {
             log.info("[WEBHOOK] Ignoring non-charge event: {} — returning 200", event);
             return ResponseEntity.ok().build();

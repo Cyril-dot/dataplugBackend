@@ -5,8 +5,6 @@ import com.databundleHum.OnetBundleHub.entity.UnverifiedRecipient;
 import com.databundleHum.OnetBundleHub.dtos.response.RecipientVerificationResponse;
 import com.databundleHum.OnetBundleHub.repos.UnverifiedRecipientRepository;
 import com.databundleHum.OnetBundleHub.repos.UserRepository;
-import com.databundleHum.OnetBundleHub.security.UpstreamApiException;
-import com.databundleHum.OnetBundleHub.security.ValidationException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,7 +20,7 @@ public class UnverifiedRecipientService {
     private final UserRepository userRepository;
     private final NotificationService notificationService;
 
-    /** Manual-review state; a missing row is NOT_REPORTED, never VERIFIED. */
+    /** Informational only: BigDreams has no separate read-only recipient-check endpoint. */
     @Transactional(readOnly = true)
     public RecipientVerificationResponse check(String phone, PlatformSettings.Network network) {
         String normalizedPhone = normalizePhone(phone);
@@ -32,68 +30,41 @@ public class UnverifiedRecipientService {
                     .message("MTN verification is currently required for MTN data delivery only.")
                     .build();
         }
-        UnverifiedRecipient item = repository.findByPhoneNumberAndNetwork(normalizedPhone, network).orElse(null);
-        if (item == null) {
-            return RecipientVerificationResponse.builder().phoneNumber(normalizedPhone)
-                    .network(network.name()).status("NOT_REPORTED").canPlaceOrder(false)
-                    .message("This MTN number has not been verified yet. Please complete verification before ordering.")
-                    .build();
-        }
-        boolean canPlace = item.getStatus() == UnverifiedRecipient.ReviewStatus.VERIFIED;
         return RecipientVerificationResponse.builder().phoneNumber(normalizedPhone)
-                .network(network.name()).status(item.getStatus().name()).canPlaceOrder(canPlace)
-                .message(canPlace ? "This number is verified for MTN data delivery."
-                        : "This number has been submitted for MTN verification and cannot receive an order yet.")
-                .attempts(item.getAttempts()).failureReason(item.getFailureReason())
-                .lastFailedAt(item.getLastFailedAt()).verifiedAt(item.getVerifiedAt())
-                .verifiedBy(item.getVerifiedBy()).build();
-    }
-
-    /**
-     * Fail-closed order guard. A missing verification record is not proof that
-     * an MTN recipient is deliverable; only an explicit VERIFIED decision may
-     * reach the provider.
-     */
-    public void assertOrderAllowed(String phone, PlatformSettings.Network network) {
-        RecipientVerificationResponse result = check(phone, network);
-        if (!result.isCanPlaceOrder()) {
-            String message = "NOT_REPORTED".equals(result.getStatus())
-                    ? "This MTN number has not been verified yet. Please complete verification before ordering."
-                    : "This number has been submitted for MTN verification. Please wait for verification or use another number.";
-            throw new ValidationException(message);
-        }
-    }
-
-    /**
-     * Same guard for the provider boundary. It is represented as an upstream
-     * failure so every paid flow marks the order failed and performs its normal
-     * refund path instead of leaving a debit or a VERIFIED order behind.
-     */
-    public void assertOrderAllowedBeforeProviderPush(String phone, PlatformSettings.Network network) {
-        try {
-            assertOrderAllowed(phone, network);
-        } catch (ValidationException ex) {
-            throw new UpstreamApiException(ex.getMessage(), ex);
-        }
+                .network(network.name()).status("PROVIDER_CHECK_ON_ORDER").canPlaceOrder(true)
+                .message("BigDreams checks MTN recipient eligibility when the actual order is submitted. This endpoint does not pre-approve the number.")
+                .build();
     }
 
     @Transactional
     public void recordFailure(String phone, PlatformSettings.Network network, String reason,
                               String sourceEmail, String sourceFullName) {
-        UnverifiedRecipient item = repository.findByPhoneNumberAndNetwork(normalizePhone(phone), network)
-                .orElseGet(() -> UnverifiedRecipient.builder()
-                        .phoneNumber(normalizePhone(phone)).network(network).firstFailedAt(LocalDateTime.now()).build());
+        LocalDateTime now = LocalDateTime.now();
+        UnverifiedRecipient item = repository.findByPhoneNumberAndNetwork(normalizePhone(phone), network).orElse(null);
+        boolean notifyAdmins = item == null
+                || item.getStatus() == UnverifiedRecipient.ReviewStatus.VERIFIED
+                || item.getLastFailedAt() == null
+                || item.getLastFailedAt().isBefore(now.minusHours(24));
+        if (item == null) {
+            item = UnverifiedRecipient.builder()
+                    .phoneNumber(normalizePhone(phone)).network(network).firstFailedAt(now).build();
+        }
         item.setFailureReason(trim(reason));
         item.setSourceEmail(sourceEmail);
         item.setSourceFullName(sourceFullName);
-        item.setLastFailedAt(LocalDateTime.now());
+        item.setLastFailedAt(now);
         item.setAttempts(item.getAttempts() <= 0 ? 1 : item.getAttempts() + 1);
         if (item.getStatus() == null || item.getStatus() == UnverifiedRecipient.ReviewStatus.VERIFIED) {
             item.setStatus(UnverifiedRecipient.ReviewStatus.UNVERIFIED);
             item.setVerifiedAt(null);
             item.setVerifiedBy(null);
         }
-        repository.save(item);
+        UnverifiedRecipient saved = repository.save(item);
+        if (notifyAdmins) {
+            userRepository.findAllByRole(com.databundleHum.OnetBundleHub.entity.User.Role.SUPER_ADMIN)
+                    .forEach(admin -> notificationService.sendMtnRecipientReviewRequiredAlert(
+                            admin.getEmail(), admin.getFullName(), saved.getPhoneNumber(), saved.getFailureReason()));
+        }
     }
 
     public List<UnverifiedRecipient> daily(LocalDate date) {

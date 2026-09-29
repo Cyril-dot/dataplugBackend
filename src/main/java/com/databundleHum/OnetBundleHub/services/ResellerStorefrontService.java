@@ -78,6 +78,7 @@ public class ResellerStorefrontService {
     private final BigDreamsDataService          bigDreamsDataService;
     private final NotificationService        notificationService;
     private final UnverifiedRecipientService unverifiedRecipientService;
+    private final OrderService               orderService;
     private final AppConfig appConfig;
     private final FrontendUrlResolver frontendUrlResolver;
 
@@ -151,7 +152,6 @@ public class ResellerStorefrontService {
                                                       InitiateGuestStorefrontOrderRequest request) {
         log.info("[STOREFRONT] initiateGuestStorefrontOrder: slug={} phone={} network={} gb={}",
                 slug, request.getPhoneNumber(), request.getNetwork(), request.getCapacityGb());
-        unverifiedRecipientService.assertOrderAllowed(request.getPhoneNumber(), request.getNetwork());
 
         ResellerProfile profile   = findApprovedProfileBySlugOrThrow(slug);
         ResellerPricing pricing   = findResellerPricingOrThrow(profile.getUser(),
@@ -207,7 +207,6 @@ public class ResellerStorefrontService {
         return toOrderResponse(order, authorizationUrl);
     }
 
-    @Transactional
     public void fulfilStorefrontKorapayOrder(String reference) {
         log.info("[STOREFRONT] fulfilStorefrontKorapayOrder: ref={}", reference);
 
@@ -232,6 +231,7 @@ public class ResellerStorefrontService {
                 unverifiedRecipientService.recordFailure(order.getPhoneNumber(), order.getNetwork(), ex.getMessage(),
                         order.getUser() == null ? buildGuestEmail(order.getPhoneNumber()) : order.getUser().getEmail(),
                         profileSourceName(order));
+                orderService.refundPaidMtnRecipientRejection(order, ex);
             }
             if (order.getUser() != null) {
                 notificationService.sendOrderFailedAlert(
@@ -247,7 +247,6 @@ public class ResellerStorefrontService {
                                                     WalletOrderRequest request) {
         log.info("[STOREFRONT] placeWalletStorefrontOrder: slug={} customerId={} phone={} network={} gb={}",
                 slug, customerId, request.getPhoneNumber(), request.getNetwork(), request.getCapacityGb());
-        unverifiedRecipientService.assertOrderAllowed(request.getPhoneNumber(), request.getNetwork());
 
         User            customer  = findUserOrThrow(customerId);
         ResellerProfile profile   = findApprovedProfileBySlugOrThrow(slug);
@@ -652,10 +651,6 @@ public class ResellerStorefrontService {
 
     // ── Big Dreams bundle provisioning helper ────────────────────────────────
     private void provisionOrder(Order order) {
-        // Final fail-closed check: this is the last boundary before a provider
-        // push, so paid guest and storefront paths cannot bypass verification.
-        unverifiedRecipientService.assertOrderAllowedBeforeProviderPush(
-                order.getPhoneNumber(), order.getNetwork());
         String providerNetwork = switch (order.getNetwork()) {
             case MTN -> "mtn";
             case TELECEL -> "telecel";
@@ -704,7 +699,8 @@ public class ResellerStorefrontService {
 
     private boolean isMtnRecipientApprovalFailure(UpstreamApiException ex) {
         String message = ex.getMessage() == null ? "" : ex.getMessage().toLowerCase();
-        return message.contains("not verified") || message.contains("unverified")
+        return message.contains("beneficiary_required") || message.contains("beneficiary required")
+                || message.contains("not verified") || message.contains("unverified")
                 || (message.contains("not approved") && message.contains("sent for approval"));
     }
 
@@ -764,8 +760,11 @@ public class ResellerStorefrontService {
                 .sellingPriceGhc(o.getSellingPriceGhc())
                 .paymentMethod(o.getPaymentMethod().name())
                 .paystackRef(o.getPaystackRef())
+                .korapayRefundReference(o.getKorapayRefundReference())
+                .korapayRefundStatus(o.getKorapayRefundStatus())
                 .authorizationUrl(authorizationUrl)
                 .status(o.getStatus().name())
+                .failureReason(o.getFailureReason())
                 .guest(o.isGuest())
                 .createdAt(o.getCreatedAt())
                 .updatedAt(o.getUpdatedAt())

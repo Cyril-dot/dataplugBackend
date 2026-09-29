@@ -72,6 +72,12 @@ public class OrderResponse {
     /** Paystack transaction reference. Null for wallet-funded orders. */
     private String     paystackRef;
 
+    /** Korapay refund lifecycle status, when a paid order has been refunded. */
+    private String     korapayRefundStatus;
+
+    /** Merchant refund reference used to correlate Korapay refund callbacks. */
+    private String     korapayRefundReference;
+
     /** Order.OrderStatus.name() — "PENDING", "VERIFIED", "DELIVERED", "FAILED" */
     private String     status;
 

@@ -16,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 /**
@@ -521,8 +522,18 @@ public class AdminService {
     // ── All-orders / all-transactions ─────────────────────────────────────────
 
     @Transactional(readOnly = true)
-    public Page<OrderResponse> getAllOrders(Pageable pageable) {
-        return orderRepository.findAll(pageable).map(this::toOrderResponse);
+    public Page<OrderResponse> getAllOrders(Pageable pageable, String filter) {
+        String normalizedFilter = filter == null ? "ALL" : filter.trim().toUpperCase(Locale.ROOT);
+        Page<Order> orders = switch (normalizedFilter) {
+            case "ALL" -> orderRepository.findAll(pageable);
+            case "FAILED" -> orderRepository.findByStatus(Order.OrderStatus.FAILED, pageable);
+            case "REFUNDED" -> orderRepository.findRefundedOrders(
+                    Order.OrderStatus.FAILED, Order.PaymentMethod.WALLET, pageable);
+            case "REFUND_PENDING" -> orderRepository.findOrdersWithPendingRefund(pageable);
+            case "REFUND_ISSUE" -> orderRepository.findOrdersWithRefundIssue(pageable);
+            default -> throw new ValidationException("Unsupported order filter: " + filter);
+        };
+        return orders.map(this::toOrderResponse);
     }
 
     @Transactional(readOnly = true)
@@ -661,7 +672,10 @@ public class AdminService {
                 .profitGhc(profit)
                 .paymentMethod(o.getPaymentMethod().name())
                 .paystackRef(o.getPaystackRef())
+                .korapayRefundReference(o.getKorapayRefundReference())
+                .korapayRefundStatus(o.getKorapayRefundStatus())
                 .status(o.getStatus().name())
+                .failureReason(o.getFailureReason())
                 .guest(o.isGuest())
                 .storefrontOrder(o.isStorefrontOrder())
                 .resellerStoreName(resellerStoreName)

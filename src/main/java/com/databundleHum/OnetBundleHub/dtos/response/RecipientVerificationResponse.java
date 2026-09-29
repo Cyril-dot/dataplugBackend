@@ -10,9 +10,9 @@ import java.time.LocalDateTime;
 public class RecipientVerificationResponse {
     private String phoneNumber;
     private String network;
-    /** NOT_APPLICABLE, NOT_REPORTED, UNVERIFIED, SUBMITTED, or VERIFIED. */
+    /** NOT_APPLICABLE or PROVIDER_CHECK_ON_ORDER; local audit states are not order authorization. */
     private String status;
-    /** False for all known unverified/submitted records. Never means auto-verified. */
+    /** Informational only; the actual BigDreams order response is authoritative. */
     private boolean canPlaceOrder;
     private String message;
     private Integer attempts;

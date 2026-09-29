@@ -129,6 +129,18 @@ public class Order {
     @Column(name = "paystack_ref", unique = true, length = 100)
     private String paystackRef;
 
+    /** Merchant-generated Korapay refund reference, populated only when a paid order is refunded. */
+    @Column(name = "korapay_refund_reference", length = 50)
+    private String korapayRefundReference;
+
+    /** Korapay refund lifecycle status: requested, processing, success, failed, or refund_request_failed. */
+    @Column(name = "korapay_refund_status", length = 40)
+    private String korapayRefundStatus;
+
+    /** Refund initiation failure details for support/admin follow-up. */
+    @Column(name = "korapay_refund_failure", length = 500)
+    private String korapayRefundFailure;
+
     // ── Provider (Big Dreams Data) ────────────────────────────────────────────
 
     /**

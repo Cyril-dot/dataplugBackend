@@ -40,9 +40,9 @@ public class OrderController {
         return principal.userId();
     }
 
-    // ── Recipient verification pre-check ─────────────────────────────────────
+    // ── Informational recipient status; BigDreams validates during ordering ──
     @PostMapping("/recipient-verification/check")
-    @Operation(summary = "Check the manual verification state before placing an order")
+    @Operation(summary = "Explain that BigDreams checks MTN eligibility during actual order submission")
     public ResponseEntity<RecipientVerificationResponse> checkRecipientVerification(
             @Valid @RequestBody RecipientVerificationRequest request) {
         return ResponseEntity.ok(orderService.checkRecipientVerification(request));
@@ -51,7 +51,7 @@ public class OrderController {
     // ── Guest checkout ────────────────────────────────────────────────────────
 
     @PostMapping("/guest")
-    @Operation(summary = "Initiate a guest bundle order via Paystack")
+    @Operation(summary = "Initiate a guest bundle order via Korapay")
     @ApiResponses({
             @ApiResponse(responseCode = "201", description = "Order initiated — use paystackReference to complete payment"),
             @ApiResponse(responseCode = "400", description = "Validation error"),

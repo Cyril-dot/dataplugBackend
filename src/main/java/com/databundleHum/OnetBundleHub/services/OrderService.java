@@ -82,9 +82,6 @@ import java.util.UUID;
 public class OrderService {
 
     private static final int DUPLICATE_WINDOW_SECONDS = 30;
-    private static final String MTN_RECIPIENT_NOT_APPROVED_MESSAGE =
-            "This MTN number has not been verified to purchase MTN data yet. "
-                    + "Please try again later or use another MTN number.";
 
     /** 10% processing charge passed on to the customer at the point of payment. */
     private static final BigDecimal PROCESSING_CHARGE_RATE = new BigDecimal("0.10");
@@ -123,13 +120,29 @@ public class OrderService {
         return unverifiedRecipientService.check(request.getPhoneNumber(), request.getNetwork());
     }
 
+    @Transactional
+    public void updateKorapayRefundStatus(String refundReference, String status) {
+        orderRepository.findByKorapayRefundReference(refundReference).ifPresentOrElse(order -> {
+            order.setKorapayRefundStatus(status == null ? "unknown" : status.toLowerCase());
+            if ("success".equalsIgnoreCase(status)) {
+                order.setKorapayRefundFailure(null);
+            } else if ("failed".equalsIgnoreCase(status)) {
+                order.setKorapayRefundFailure("Korapay reported that the refund failed.");
+                alertAdminsOfRefundFailure(order, refundReference, order.getKorapayRefundFailure());
+            }
+            orderRepository.save(order);
+            log.info("[KORAPAY] Refund status updated: orderId={} refundReference={} status={}",
+                    order.getId(), refundReference, status);
+        }, () -> log.warn("[KORAPAY] Refund callback did not match an order: refundReference={} status={}",
+                refundReference, status));
+    }
+
     // ── Guest checkout: step 1 — initiate ────────────────────────────────────
 
     @Transactional
     public InitiateOrderResponse initiateGuestOrder(InitiateGuestOrderRequest request) {
         log.info("[ORDER] initiateGuestOrder: phone={} network={} gb={}",
                 request.getPhoneNumber(), request.getNetwork(), request.getCapacityGb());
-        unverifiedRecipientService.assertOrderAllowed(request.getPhoneNumber(), request.getNetwork());
 
         PlatformSettings settings = getActiveSettings(
                 request.getNetwork(), request.getCapacityGb());
@@ -207,7 +220,58 @@ public class OrderService {
             log.error("[ORDER] Bundle provision failed after Korapay payment: orderId={} ref={} error={}",
                     order.getId(), reference, ex.getMessage());
             markOrderFailedAfterPaymentFailure(order, ex);
+            refundPaidMtnRecipientRejection(order, ex);
         }
+    }
+
+    /**
+     * BigDreams is the authority for MTN eligibility. If it rejects a paid
+     * Korapay order for beneficiary approval, request a full gateway refund.
+     * The merchant refund reference is deterministic so duplicate webhooks
+     * cannot create a second refund.
+     */
+    public void refundPaidMtnRecipientRejection(Order order, UpstreamApiException providerFailure) {
+        if (!order.isGuest()
+                || order.getPaymentMethod() == Order.PaymentMethod.WALLET
+                || order.getNetwork() != PlatformSettings.Network.MTN
+                || !isMtnRecipientApprovalFailure(providerFailure)
+                || order.getPaystackRef() == null) {
+            return;
+        }
+
+        String refundReference = "DP-RF-" + order.getId();
+        order.setKorapayRefundReference(refundReference);
+        order.setKorapayRefundStatus("requested");
+        order.setKorapayRefundFailure(null);
+        orderRepository.save(order);
+
+        try {
+            KorapayService.RefundInitiation refund = korapayService.initiateFullRefund(
+                    order.getPaystackRef(), refundReference, "BigDreams rejected MTN recipient verification");
+            order.setKorapayRefundStatus(refund.status());
+            if ("failed".equalsIgnoreCase(refund.status())) {
+                order.setKorapayRefundFailure("Korapay reported that the refund failed.");
+                alertAdminsOfRefundFailure(order, refundReference, order.getKorapayRefundFailure());
+            }
+            orderRepository.save(order);
+            log.info("[KORAPAY] Full refund requested after provider rejection: orderId={} refundReference={} status={}",
+                    order.getId(), refundReference, refund.status());
+        } catch (RuntimeException refundError) {
+            String failure = refundError.getMessage() == null
+                    ? "Korapay refund request failed" : refundError.getMessage();
+            order.setKorapayRefundStatus("refund_request_failed");
+            order.setKorapayRefundFailure(failure.substring(0, Math.min(500, failure.length())));
+            orderRepository.save(order);
+            alertAdminsOfRefundFailure(order, refundReference, order.getKorapayRefundFailure());
+            log.error("[KORAPAY] Refund request failed and needs admin attention: orderId={} refundReference={} error={}",
+                    order.getId(), refundReference, failure, refundError);
+        }
+    }
+
+    private void alertAdminsOfRefundFailure(Order order, String refundReference, String failure) {
+        userRepository.findAllByRole(User.Role.SUPER_ADMIN).forEach(admin ->
+                notificationService.sendKorapayRefundFailureAlert(
+                        admin.getEmail(), admin.getFullName(), order.getId(), refundReference, failure));
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -403,8 +467,6 @@ public class OrderService {
 
         BigDecimal price = pricingService.resolvePriceForUser(user, settings);
 
-        unverifiedRecipientService.assertOrderAllowed(request.getPhoneNumber(), request.getNetwork());
-        rejectPreviouslyUnapprovedMtnRecipient(userId, request);
         rejectIfDuplicate(userId, request.getPhoneNumber(), request.getNetwork(),
                 request.getCapacityGb(), "USER");
 
@@ -434,7 +496,7 @@ public class OrderService {
         } catch (UpstreamApiException ex) {
             handleProvisioningFailure(order.getId(), user, price, ex);
             if (isMtnRecipientApprovalFailure(ex)) {
-                throw new ValidationException(MTN_RECIPIENT_NOT_APPROVED_MESSAGE);
+                throw new ValidationException(mtnRecipientFailureMessage(ex, true));
             }
         }
 
@@ -464,37 +526,21 @@ public class OrderService {
                 .build();
     }
 
-    /**
-     * Big Dreams has no separate approval-check endpoint. Once it tells us a
-     * recipient is awaiting MTN approval, remember that rejection and stop
-     * sending/debiting repeated attempts until the provider can accept it.
-     */
-    private void rejectPreviouslyUnapprovedMtnRecipient(UUID userId, WalletOrderRequest request) {
-        if (request.getNetwork() != PlatformSettings.Network.MTN) return;
-        // A current VERIFIED recipient is explicitly allowed to proceed, even if
-        // an older failed attempt exists for the same user and number.
-        if (unverifiedRecipientService.check(request.getPhoneNumber(), request.getNetwork()).isCanPlaceOrder()) return;
-
-        boolean previouslyRejected = orderRepository
-                .findFirstByUserIdAndPhoneNumberAndNetworkAndStatusAndFailureReasonContainingOrderByCreatedAtDesc(
-                        userId,
-                        request.getPhoneNumber(),
-                        PlatformSettings.Network.MTN,
-                        Order.OrderStatus.FAILED,
-                        "not approved")
-                .isPresent();
-        if (previouslyRejected) {
-            log.info("[ORDER] Preflight blocked unapproved MTN recipient: userId={} phone={}",
-                    userId, request.getPhoneNumber());
-            throw new ValidationException(MTN_RECIPIENT_NOT_APPROVED_MESSAGE);
-        }
-    }
-
     private boolean isMtnRecipientApprovalFailure(UpstreamApiException ex) {
         String message = ex.getMessage() == null ? "" : ex.getMessage().toLowerCase();
-        return message.contains("not verified")
+        return message.contains("beneficiary_required")
+                || message.contains("beneficiary required")
+                || message.contains("not verified")
                 || message.contains("unverified")
                 || (message.contains("not approved") && message.contains("sent for approval"));
+    }
+
+    private String mtnRecipientFailureMessage(UpstreamApiException ex, boolean walletRefunded) {
+        String refundMessage = walletRefunded ? "Your wallet has been refunded."
+                : "A Korapay refund request has been started.";
+        String providerDetails = ex.getMessage() == null ? "" : " Provider response: " + ex.getMessage();
+        return "BigDreams rejected this MTN recipient (BENEFICIARY_REQUIRED). The order was not delivered. "
+                + refundMessage + providerDetails;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -527,8 +573,6 @@ public class OrderService {
                 request.getNetwork(), request.getCapacityGb());
         BigDecimal       costPrice = settings.getResellerPriceGhc();
 
-        unverifiedRecipientService.assertOrderAllowed(request.getPhoneNumber(), request.getNetwork());
-        rejectPreviouslyUnapprovedMtnRecipient(userId, request);
         rejectIfDuplicate(userId, request.getPhoneNumber(), request.getNetwork(),
                 request.getCapacityGb(), "RESELLER");
 
@@ -588,7 +632,7 @@ public class OrderService {
                     order.getId(), ex.getMessage());
             markResellerOrderFailed(order.getId(), user, costPrice, ex);
             if (isMtnRecipientApprovalFailure(ex)) {
-                throw new ValidationException(MTN_RECIPIENT_NOT_APPROVED_MESSAGE);
+                throw new ValidationException(mtnRecipientFailureMessage(ex, true));
             }
         }
 
@@ -626,11 +670,6 @@ public class OrderService {
      * order_id so retries cannot charge the share balance twice.
      */
     private void provisionOrder(Order order) {
-        // Final fail-closed check: the pre-order check can become stale or be
-        // bypassed by a direct API/webhook call. Never push to the provider
-        // unless the current database state is explicitly VERIFIED.
-        unverifiedRecipientService.assertOrderAllowedBeforeProviderPush(
-                order.getPhoneNumber(), order.getNetwork());
         String providerOrderId = "datapack-" + order.getId();
         BigDreamsDataService.ShareResult result;
         switch (order.getNetwork()) {
@@ -796,6 +835,8 @@ public class OrderService {
                 .sellingPriceGhc(o.getSellingPriceGhc())
                 .paymentMethod(o.getPaymentMethod().name())
                 .paystackRef(o.getPaystackRef())
+                .korapayRefundReference(o.getKorapayRefundReference())
+                .korapayRefundStatus(o.getKorapayRefundStatus())
                 .status(o.getStatus().name())
                 .failureReason(o.getFailureReason())
                 .guest(o.isGuest())

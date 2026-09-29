@@ -147,6 +147,45 @@ public class KorapayService {
         }
     }
 
+    /** Initiates a full refund for a successful, settled Korapay pay-in transaction. */
+    @SuppressWarnings("unchecked")
+    public RefundInitiation initiateFullRefund(String paymentReference, String refundReference, String reason) {
+        Map<String, Object> payload = Map.of(
+                "payment_reference", paymentReference,
+                "reference", refundReference,
+                "reason", reason
+        );
+        log.info("[KORAPAY] Initiating full refund: paymentReference={} refundReference={}",
+                paymentReference, refundReference);
+
+        try {
+            Map<String, Object> response = korapayWebClient.post()
+                    .uri("/merchant/api/v1/refunds/initiate")
+                    .bodyValue(payload)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .block();
+
+            if (response == null || !Boolean.TRUE.equals(response.get("status"))) {
+                Object message = response == null ? "empty response" : response.get("message");
+                throw new UpstreamApiException("Korapay refund request was rejected: " + message);
+            }
+
+            Map<String, Object> data = (Map<String, Object>) response.get("data");
+            String status = data == null || data.get("status") == null
+                    ? "processing" : String.valueOf(data.get("status")).toLowerCase();
+            log.info("[KORAPAY] Refund initiated: paymentReference={} refundReference={} status={}",
+                    paymentReference, refundReference, status);
+            return new RefundInitiation(refundReference, status);
+        } catch (WebClientResponseException ex) {
+            log.error("[KORAPAY] HTTP error during refund: status={} body={} paymentReference={} refundReference={}",
+                    ex.getStatusCode(), ex.getResponseBodyAsString(), paymentReference, refundReference);
+            throw new UpstreamApiException("Korapay refund: " + extractKorapayErrorMessage(ex));
+        }
+    }
+
+    public record RefundInitiation(String reference, String status) {}
+
     public BigDecimal extractAmountGhc(Map<String, Object> txData) {
         Object raw = txData.get("amount");
         BigDecimal result = (raw instanceof Number n)

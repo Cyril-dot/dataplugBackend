@@ -87,7 +87,9 @@ public class NotificationService {
     public void sendOrderFailedAlert(String email, String fullName, Long orderId, String failureReason) {
         log.warn("Sending order failed alert: to={} orderId={}", email, orderId);
         String reason = failureReason == null ? "" : failureReason.toLowerCase();
-        boolean recipientUnverified = reason.contains("not verified")
+        boolean recipientUnverified = reason.contains("beneficiary_required")
+                || reason.contains("beneficiary required")
+                || reason.contains("not verified")
                 || reason.contains("unverified")
                 || (reason.contains("not approved") && reason.contains("sent for approval"));
         String message = recipientUnverified
@@ -101,6 +103,26 @@ public class NotificationService {
                 recipientUnverified ? "Recipient number is not verified — Order #" + orderId
                         : "Your data bundle order failed — Order #" + orderId,
                 message + "\n\nTeam DBH");
+    }
+
+    @Async
+    public void sendMtnRecipientReviewRequiredAlert(String email, String fullName, String phone, String providerReason) {
+        String message = "BigDreams rejected MTN recipient " + phone + " and the order was not delivered. "
+                + "Please review/approve the recipient in BigDreams; this local audit queue does not change provider approval.";
+        if (providerReason != null && !providerReason.isBlank()) {
+            message += "\n\nProvider response: " + providerReason;
+        }
+        sendEmail(email, fullName, "BigDreams MTN recipient rejection — review required", message + "\n\nTeam DBH");
+    }
+
+    @Async
+    public void sendKorapayRefundFailureAlert(String email, String fullName, Long orderId,
+                                               String refundReference, String failureReason) {
+        sendEmail(email, fullName, "Korapay refund needs attention — Order #" + orderId,
+                "The automatic Korapay refund request failed for order #" + orderId + ".\n"
+                        + "Payment reference: " + refundReference + "\n"
+                        + "Please review the payment and refund it manually if needed.\n\n"
+                        + "Failure: " + failureReason + "\n\nTeam DBH");
     }
 
     @Async

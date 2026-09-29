@@ -17,6 +17,8 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
 
     Optional<Order> findByPaystackRef(String paystackRef);
 
+    Optional<Order> findByKorapayRefundReference(String korapayRefundReference);
+
     /** Finds the latest provider rejection for a recipient awaiting MTN approval. */
     Optional<Order> findFirstByUserIdAndPhoneNumberAndNetworkAndStatusAndFailureReasonContainingOrderByCreatedAtDesc(
             UUID userId,
@@ -45,6 +47,21 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
 
     /** All orders in a given status — used by BigDreamsService background poller. */
     List<Order> findByStatus(Order.OrderStatus status);
+
+    /** Paginated failed orders for the Super Admin order review. */
+    Page<Order> findByStatus(Order.OrderStatus status, Pageable pageable);
+
+    @Query("SELECT o FROM Order o WHERE LOWER(o.korapayRefundStatus) = 'success' "
+            + "OR (o.status = :failedStatus AND o.paymentMethod = :walletMethod)")
+    Page<Order> findRefundedOrders(@Param("failedStatus") Order.OrderStatus failedStatus,
+                                   @Param("walletMethod") Order.PaymentMethod walletMethod,
+                                   Pageable pageable);
+
+    @Query("SELECT o FROM Order o WHERE LOWER(o.korapayRefundStatus) IN ('pending', 'requested', 'processing')")
+    Page<Order> findOrdersWithPendingRefund(Pageable pageable);
+
+    @Query("SELECT o FROM Order o WHERE LOWER(o.korapayRefundStatus) IN ('failed', 'refund_request_failed')")
+    Page<Order> findOrdersWithRefundIssue(Pageable pageable);
 
     /** Sum of selling_price_ghc for orders in a given status — platform revenue KPI. */
     @Query("SELECT COALESCE(SUM(o.sellingPriceGhc), 0) FROM Order o WHERE o.status = :status")

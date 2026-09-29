@@ -572,12 +572,14 @@ public class BigDreamsDataService {
 
             JsonNode root = objectMapper.readTree(rawBody);
 
-            if (!root.path("success").asBoolean(false)) {
+            String providerStatus = text(root, "status");
+            if (!root.path("success").asBoolean(false) && !"success".equalsIgnoreCase(providerStatus)) {
+                String code = text(root, "code");
                 String error = text(root, "error");
                 String message = text(root, "message");
                 throw new UpstreamApiException(
                         "Big Dreams Data rejected action=" + actionForLogging
-                                + " — error=" + error + " message=" + message);
+                                + " — code=" + code + " error=" + error + " message=" + message);
             }
 
             JsonNode data = root.path("data");

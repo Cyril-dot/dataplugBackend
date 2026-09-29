@@ -320,11 +320,13 @@ public class AdminController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(defaultValue = "createdAt") String sortBy,
-            @RequestParam(defaultValue = "DESC") Sort.Direction direction) {
+            @RequestParam(defaultValue = "DESC") Sort.Direction direction,
+            @RequestParam(defaultValue = "ALL") String filter) {
 
         Pageable pageable = PageRequest.of(page, size, Sort.by(direction, sortBy));
-        log.info("[ADMIN] All-orders requested by adminId={} page={} size={}", currentAdminId(), page, size);
-        return ResponseEntity.ok(adminService.getAllOrders(pageable));
+        log.info("[ADMIN] All-orders requested by adminId={} page={} size={} filter={}",
+                currentAdminId(), page, size, filter);
+        return ResponseEntity.ok(adminService.getAllOrders(pageable, filter));
     }
 
     @GetMapping("/transactions")
