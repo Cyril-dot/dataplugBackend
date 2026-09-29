@@ -80,11 +80,27 @@ public class NotificationService {
      */
     @Async
     public void sendOrderFailedAlert(String email, String fullName, Long orderId) {
+        sendOrderFailedAlert(email, fullName, orderId, null);
+    }
+
+    @Async
+    public void sendOrderFailedAlert(String email, String fullName, Long orderId, String failureReason) {
         log.warn("Sending order failed alert: to={} orderId={}", email, orderId);
-        sendEmail(email, fullName, "Your data bundle order failed — Order #" + orderId,
-                "Hi " + fullName + ",\n\nUnfortunately your data bundle order #" + orderId
-                        + " could not be fulfilled. Our support team will review and issue a refund "
-                        + "if payment was taken.\n\nTeam DBH");
+        String reason = failureReason == null ? "" : failureReason.toLowerCase();
+        boolean recipientUnverified = reason.contains("not verified")
+                || reason.contains("unverified")
+                || (reason.contains("not approved") && reason.contains("sent for approval"));
+        String message = recipientUnverified
+                ? "Hi " + fullName + ",\n\nYour data bundle order #" + orderId
+                    + " could not be completed because the recipient number is not verified by the network. "
+                    + "Your payment has been refunded where applicable. You may try again after the number is verified."
+                : "Hi " + fullName + ",\n\nUnfortunately your data bundle order #" + orderId
+                    + " could not be fulfilled. Our support team will review and issue a refund if payment was taken.";
+        if (failureReason != null && !failureReason.isBlank()) message += "\n\nProvider reason: " + failureReason;
+        sendEmail(email, fullName,
+                recipientUnverified ? "Recipient number is not verified — Order #" + orderId
+                        : "Your data bundle order failed — Order #" + orderId,
+                message + "\n\nTeam DBH");
     }
 
     @Async

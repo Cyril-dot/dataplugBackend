@@ -239,7 +239,7 @@ public class OrderService {
         if (order.getUser() != null) {
             notificationService.sendOrderFailedAlert(
                     order.getUser().getEmail(), order.getUser().getFullName(),
-                    order.getId());
+                    order.getId(), ex.getMessage());
         }
     }
 
@@ -482,7 +482,9 @@ public class OrderService {
 
     private boolean isMtnRecipientApprovalFailure(UpstreamApiException ex) {
         String message = ex.getMessage() == null ? "" : ex.getMessage().toLowerCase();
-        return message.contains("not approved") && message.contains("sent for approval");
+        return message.contains("not verified")
+                || message.contains("unverified")
+                || (message.contains("not approved") && message.contains("sent for approval"));
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -497,7 +499,7 @@ public class OrderService {
         }
         walletService.credit(user.getId(), price, TransactionType.REFUND,
                 "Refund: failed bundle delivery for order #" + order.getId(), null);
-        notificationService.sendOrderFailedAlert(user.getEmail(), user.getFullName(), order.getId());
+        notificationService.sendOrderFailedAlert(user.getEmail(), user.getFullName(), order.getId(), ex.getMessage());
 
         log.error("[ORDER] Provisioning failed, wallet refunded: orderId={} userId={} amount={} error={}",
                 orderId, user.getId(), price, ex.getMessage());
@@ -601,7 +603,7 @@ public class OrderService {
                 user.getId(), order.getId(), costPrice);
 
         notificationService.sendOrderFailedAlert(
-                user.getEmail(), user.getFullName(), order.getId());
+                user.getEmail(), user.getFullName(), order.getId(), ex.getMessage());
     }
 
     // ── Big Dreams provisioning helper ────────────────────────────────────────
