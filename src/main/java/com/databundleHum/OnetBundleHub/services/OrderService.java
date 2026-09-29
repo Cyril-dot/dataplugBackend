@@ -471,6 +471,9 @@ public class OrderService {
      */
     private void rejectPreviouslyUnapprovedMtnRecipient(UUID userId, WalletOrderRequest request) {
         if (request.getNetwork() != PlatformSettings.Network.MTN) return;
+        // A current VERIFIED recipient is explicitly allowed to proceed, even if
+        // an older failed attempt exists for the same user and number.
+        if (unverifiedRecipientService.check(request.getPhoneNumber(), request.getNetwork()).isCanPlaceOrder()) return;
 
         boolean previouslyRejected = orderRepository
                 .findFirstByUserIdAndPhoneNumberAndNetworkAndStatusAndFailureReasonContainingOrderByCreatedAtDesc(
