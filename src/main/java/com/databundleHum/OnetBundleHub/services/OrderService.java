@@ -590,29 +590,37 @@ public class OrderService {
 
     // ── Big Dreams provisioning helper ────────────────────────────────────────
     /**
-     * Places the paid order through Big Dreams. PlatformSettings remains the
-     * source of truth for availability and customer/reseller prices; Big Dreams
-     * is responsible only for delivery and its own provider-wallet charge.
-     * The internal order ID is sent as Big Dreams' optional order_id so retries
-     * cannot charge the provider twice.
+     * Places the paid order through the documented Big Dreams Share Bundles
+     * actions. PlatformSettings remains the source of truth for availability
+     * and customer/reseller prices; the provider share balance is used only for
+     * delivery. The internal order ID is sent as the provider's optional
+     * order_id so retries cannot charge the share balance twice.
      */
     private void provisionOrder(Order order) {
-        String providerNetwork = switch (order.getNetwork()) {
-            case MTN -> "mtn";
-            case TELECEL -> "telecel";
-            case AIRTELTIGO -> "ishare";
-        };
-        if (order.getCapacityGb().stripTrailingZeros().scale() > 0) {
-            throw new UpstreamApiException("Big Dreams only supports whole-number GB packages: "
-                    + order.getCapacityGb());
-        }
         String providerOrderId = "datapack-" + order.getId();
-        log.info("[ORDER] provisionOrder: orderId={} network={} providerNetwork={} capacityGb={} providerOrderId={}",
-                order.getId(), order.getNetwork(), providerNetwork, order.getCapacityGb(), providerOrderId);
-        BigDreamsDataService.PlaceOrderResult result = bigDreamsDataService.placeOrder(
-                providerNetwork, order.getPhoneNumber(), order.getCapacityGb().intValueExact(), providerOrderId);
-        order.setDbhPurchaseId(result.transactionId());
-        order.setDbhReference(result.reference() != null ? result.reference() : result.orderId());
+        BigDreamsDataService.ShareResult result;
+        switch (order.getNetwork()) {
+            case MTN -> {
+                if (order.getCapacityGb().stripTrailingZeros().scale() > 0) {
+                    throw new UpstreamApiException("MTN Share bundles require a whole-number GB amount.");
+                }
+                result = bigDreamsDataService.shareMtn(order.getPhoneNumber(),
+                        order.getCapacityGb().intValueExact(), providerOrderId);
+            }
+            case TELECEL -> result = bigDreamsDataService.shareTelecel(
+                    order.getPhoneNumber(), order.getCapacityGb(), providerOrderId);
+            case AIRTELTIGO -> {
+                BigDecimal mb = order.getCapacityGb().multiply(BigDecimal.valueOf(1000));
+                if (mb.stripTrailingZeros().scale() > 0) {
+                    throw new UpstreamApiException("iShare bundles must resolve to a whole MB amount.");
+                }
+                result = bigDreamsDataService.shareIShare(order.getPhoneNumber(),
+                        mb.intValueExact(), providerOrderId);
+            }
+            default -> throw new UpstreamApiException("Unsupported share-bundle network: " + order.getNetwork());
+        }
+        order.setDbhPurchaseId(null);
+        order.setDbhReference(result.orderId());
         String providerStatus = result.status() == null ? "" : result.status().trim().toLowerCase()
                 .replace('-', '_').replace(' ', '_');
         order.setStatus(providerStatus.equals("completed") || providerStatus.equals("complete")
@@ -621,8 +629,8 @@ public class OrderService {
                 || providerStatus.equals("delivery_successful") || providerStatus.equals("done")
                 ? Order.OrderStatus.COMPLETED : Order.OrderStatus.PENDING);
         orderRepository.save(order);
-        log.info("[ORDER] Big Dreams accepted orderId={} providerOrderId={} reference={} status={}",
-                order.getId(), result.orderId(), result.reference(), result.status());
+        log.info("[ORDER] Big Dreams share accepted orderId={} providerOrderId={} reference={} status={}",
+                order.getId(), providerOrderId, result.orderId(), result.status());
     }
 
     // ── Order queries ─────────────────────────────────────────────────────────

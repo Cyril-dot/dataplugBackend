@@ -357,6 +357,14 @@ public class BigDreamsDataService {
                 text(data, "unit"), data.path("enabled").asBoolean(false));
     }
 
+    /** get_mtn_share_balance — MTN Share balance, denominated in GB. */
+    public ShareBalance getMtnShareBalance() {
+        log.info("[BIGDREAMS] get_mtn_share_balance");
+        JsonNode data = postForData(Map.of("action", "get_mtn_share_balance"), "get_mtn_share_balance");
+        return new ShareBalance(text(data, "network"), decimal(data, "balance"),
+                text(data, "unit"), data.path("enabled").asBoolean(false));
+    }
+
     public record ShareBalance(String network, BigDecimal balance, String unit, boolean enabled) {}
 
     /**
@@ -391,6 +399,22 @@ public class BigDreamsDataService {
         if (orderId != null && !orderId.isBlank()) body.put("order_id", orderId);
 
         JsonNode data = postForData(body, "share_telecel");
+        return new ShareResult(text(data, "order_id"), text(data, "recipient"),
+                decimal(data, "amount"), text(data, "unit"), text(data, "status"),
+                decimal(data, "balance_remaining"));
+    }
+
+    /** share_mtn — send whole-number MTN Share data (GB) from the share balance. */
+    public ShareResult shareMtn(String recipient, int gb, String orderId) {
+        log.info("[BIGDREAMS] share_mtn: recipient={} gb={} orderId={}", recipient, gb, orderId);
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("action", "share_mtn");
+        body.put("recipient", recipient);
+        body.put("gb", gb);
+        if (orderId != null && !orderId.isBlank()) body.put("order_id", orderId);
+
+        JsonNode data = postForData(body, "share_mtn");
         return new ShareResult(text(data, "order_id"), text(data, "recipient"),
                 decimal(data, "amount"), text(data, "unit"), text(data, "status"),
                 decimal(data, "balance_remaining"));
