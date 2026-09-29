@@ -28,21 +28,21 @@ public class UnverifiedRecipientService {
         if (network != PlatformSettings.Network.MTN) {
             return RecipientVerificationResponse.builder().phoneNumber(normalizedPhone)
                     .network(network.name()).status("NOT_APPLICABLE").canPlaceOrder(true)
-                    .message("Manual recipient verification is currently required for MTN numbers only.")
+                    .message("MTN verification is currently required for MTN data delivery only.")
                     .build();
         }
         UnverifiedRecipient item = repository.findByPhoneNumberAndNetwork(normalizedPhone, network).orElse(null);
         if (item == null) {
             return RecipientVerificationResponse.builder().phoneNumber(normalizedPhone)
                     .network(network.name()).status("NOT_REPORTED").canPlaceOrder(true)
-                    .message("This number has not been reported as unverified. It has not been manually verified by an admin.")
+                    .message("This number has not been submitted for MTN verification and is available for data delivery.")
                     .build();
         }
         boolean canPlace = item.getStatus() == UnverifiedRecipient.ReviewStatus.VERIFIED;
         return RecipientVerificationResponse.builder().phoneNumber(normalizedPhone)
                 .network(network.name()).status(item.getStatus().name()).canPlaceOrder(canPlace)
-                .message(canPlace ? "This number was manually verified by an admin."
-                        : "This number is awaiting manual admin verification and cannot receive an order yet.")
+                .message(canPlace ? "This number is verified for MTN data delivery."
+                        : "This number has been submitted for MTN verification and cannot receive an order yet.")
                 .attempts(item.getAttempts()).failureReason(item.getFailureReason())
                 .lastFailedAt(item.getLastFailedAt()).verifiedAt(item.getVerifiedAt())
                 .verifiedBy(item.getVerifiedBy()).build();
@@ -53,7 +53,7 @@ public class UnverifiedRecipientService {
         RecipientVerificationResponse result = check(phone, network);
         if (!result.isCanPlaceOrder() && ("UNVERIFIED".equals(result.getStatus())
                 || "SUBMITTED".equals(result.getStatus()))) {
-            throw new ValidationException("This MTN number has not been manually verified by an admin yet. Please try again later or use another number.");
+            throw new ValidationException("This number has been submitted for MTN verification. Please wait for verification or use another number.");
         }
     }
 
