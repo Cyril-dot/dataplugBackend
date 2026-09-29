@@ -3,6 +3,7 @@ package com.databundleHum.OnetBundleHub.controllers;
 import com.databundleHum.OnetBundleHub.dtos.*;
 import com.databundleHum.OnetBundleHub.dtos.response.*;
 import com.databundleHum.OnetBundleHub.security.UserPrincipal;
+import com.databundleHum.OnetBundleHub.services.BigDreamsDataService;
 import com.databundleHum.OnetBundleHub.services.OrderService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -33,6 +34,7 @@ import java.util.UUID;
 public class OrderController {
 
     private final OrderService orderService;
+    private final BigDreamsDataService bigDreamsDataService;
 
     private UUID currentUserId() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
@@ -112,6 +114,24 @@ public class OrderController {
 
     // ── Authenticated wallet order ─────────────────────────────────────────────
 
+    @PostMapping("/verify-mtn-recipient")
+    @PreAuthorize("hasAnyRole('USER', 'RESELLER', 'SUPER_ADMIN')")
+    @SecurityRequirement(name = "bearerAuth")
+    @Operation(summary = "Check MTN recipient eligibility before checkout")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Eligibility result returned"),
+            @ApiResponse(responseCode = "400", description = "MTN recipient rejected by provider")
+    })
+    public ResponseEntity<BigDreamsDataService.MtnEligibilityResult> verifyMtnRecipient(
+            @Valid @RequestBody MtnRecipientVerificationRequest request) {
+        log.info("[ORDER][MTN_VERIFY] request recipient={}", maskPhone(request.getPhoneNumber()));
+        BigDreamsDataService.MtnEligibilityResult result =
+                bigDreamsDataService.checkMtnRecipient(request.getPhoneNumber());
+        log.info("[ORDER][MTN_VERIFY] response recipient={} eligible={} status={}",
+                maskPhone(request.getPhoneNumber()), result.eligible(), result.status());
+        return ResponseEntity.ok(result);
+    }
+
     @PostMapping("/wallet")
     @PreAuthorize("hasAnyRole('USER', 'RESELLER', 'SUPER_ADMIN')")  // ← FIXED
     @SecurityRequirement(name = "bearerAuth")
@@ -131,6 +151,11 @@ public class OrderController {
         log.info("[ORDER] Wallet order placed: userId={} orderId={} status={}",
                 userId, response.getId(), response.getStatus());
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
+
+    private String maskPhone(String phone) {
+        if (phone == null || phone.length() < 4) return "****";
+        return phone.substring(0, 2) + "******" + phone.substring(phone.length() - 2);
     }
 
     // ── Reseller wallet order ─────────────────────────────────────────────────
