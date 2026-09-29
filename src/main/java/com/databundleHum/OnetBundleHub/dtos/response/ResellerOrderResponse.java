@@ -43,6 +43,8 @@ public class ResellerOrderResponse {
 
     /** Order.OrderStatus.name() — "PENDING", "VERIFIED", "DELIVERED", "FAILED" */
     private String        status;
+    /** Manual recipient review state; does not imply provider verification. */
+    private String        recipientVerificationStatus;
 
     /** Order.PaymentMethod.name() — "WALLET" or "PAYSTACK" */
     private String        paymentMethod;

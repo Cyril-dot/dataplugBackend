@@ -51,6 +51,7 @@ public class ResellerServiceImpl implements ResellerService {
     private final PlatformSettingsRepository  platformSettingsRepository;
     private final WalletService               walletService;
     private final AppUrlProvider              appUrlProvider;
+    private final UnverifiedRecipientService unverifiedRecipientService;
 
     @Value("${app.reseller.min-payout-ghc:5.00}")
     private BigDecimal minPayoutGhc;
@@ -455,6 +456,7 @@ public class ResellerServiceImpl implements ResellerService {
                 .sellingPriceGhc(o.getSellingPriceGhc())
                 .profitGhc(o.getSellingPriceGhc().subtract(o.getCostPriceGhc()))
                 .status(o.getStatus().name())
+                .recipientVerificationStatus(unverifiedRecipientService.check(o.getPhoneNumber(), o.getNetwork()).getStatus())
                 .paymentMethod(o.getPaymentMethod().name())
                 .storefrontOrder(o.isStorefrontOrder())
                 .createdAt(o.getCreatedAt())

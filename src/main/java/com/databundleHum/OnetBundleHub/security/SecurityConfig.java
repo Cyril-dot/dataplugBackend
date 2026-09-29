@@ -148,6 +148,7 @@ public class SecurityConfig {
                         // ── Public order status + guest checkout ─────────────────────
                         .requestMatchers(HttpMethod.GET,  "/api/v1/orders/status").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/orders/guest").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/orders/recipient-verification/check").permitAll()
 
                         // ── Paystack webhook ─────────────────────────────────────────
                         .requestMatchers("/api/webhooks/**").permitAll()

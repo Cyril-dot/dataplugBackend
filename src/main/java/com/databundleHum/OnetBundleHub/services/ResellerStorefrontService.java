@@ -77,6 +77,7 @@ public class ResellerStorefrontService {
     private final KorapayService             korapayService;
     private final BigDreamsDataService          bigDreamsDataService;
     private final NotificationService        notificationService;
+    private final UnverifiedRecipientService unverifiedRecipientService;
     private final AppConfig appConfig;
     private final FrontendUrlResolver frontendUrlResolver;
 
@@ -150,6 +151,7 @@ public class ResellerStorefrontService {
                                                       InitiateGuestStorefrontOrderRequest request) {
         log.info("[STOREFRONT] initiateGuestStorefrontOrder: slug={} phone={} network={} gb={}",
                 slug, request.getPhoneNumber(), request.getNetwork(), request.getCapacityGb());
+        unverifiedRecipientService.assertOrderAllowed(request.getPhoneNumber(), request.getNetwork());
 
         ResellerProfile profile   = findApprovedProfileBySlugOrThrow(slug);
         ResellerPricing pricing   = findResellerPricingOrThrow(profile.getUser(),
@@ -223,9 +225,17 @@ public class ResellerStorefrontService {
             updateResellerStats(order);
         } catch (UpstreamApiException ex) {
             log.error("[STOREFRONT] Bundle provision failed: orderId={} error={}", order.getId(), ex.getMessage());
+            order.setStatus(Order.OrderStatus.FAILED);
+            order.setFailureReason(ex.getMessage());
+            orderRepository.save(order);
+            if (order.getNetwork() == PlatformSettings.Network.MTN && isMtnRecipientApprovalFailure(ex)) {
+                unverifiedRecipientService.recordFailure(order.getPhoneNumber(), order.getNetwork(), ex.getMessage(),
+                        order.getUser() == null ? buildGuestEmail(order.getPhoneNumber()) : order.getUser().getEmail(),
+                        profileSourceName(order));
+            }
             if (order.getUser() != null) {
                 notificationService.sendOrderFailedAlert(
-                        order.getUser().getEmail(), order.getUser().getFullName(), order.getId());
+                        order.getUser().getEmail(), order.getUser().getFullName(), order.getId(), ex.getMessage());
             }
         }
     }
@@ -237,6 +247,7 @@ public class ResellerStorefrontService {
                                                     WalletOrderRequest request) {
         log.info("[STOREFRONT] placeWalletStorefrontOrder: slug={} customerId={} phone={} network={} gb={}",
                 slug, customerId, request.getPhoneNumber(), request.getNetwork(), request.getCapacityGb());
+        unverifiedRecipientService.assertOrderAllowed(request.getPhoneNumber(), request.getNetwork());
 
         User            customer  = findUserOrThrow(customerId);
         ResellerProfile profile   = findApprovedProfileBySlugOrThrow(slug);
@@ -288,11 +299,18 @@ public class ResellerStorefrontService {
             log.error("[STOREFRONT] Bundle provision failed: orderId={} error={}",
                     order.getId(), ex.getMessage());
 
+            order.setStatus(Order.OrderStatus.FAILED);
+            order.setFailureReason(ex.getMessage());
+            orderRepository.save(order);
+            if (order.getNetwork() == PlatformSettings.Network.MTN && isMtnRecipientApprovalFailure(ex)) {
+                unverifiedRecipientService.recordFailure(order.getPhoneNumber(), order.getNetwork(), ex.getMessage(),
+                        customer.getEmail(), profile.getEffectiveStoreName() + " storefront customer");
+            }
             walletService.credit(customerId, sellingPrice, TransactionType.REFUND,
                     "Refund: failed bundle delivery for order #" + order.getId(), null);
 
             notificationService.sendOrderFailedAlert(
-                    customer.getEmail(), customer.getFullName(), order.getId());
+                    customer.getEmail(), customer.getFullName(), order.getId(), ex.getMessage());
         }
 
         return toOrderResponse(orderRepository.save(order));
@@ -678,6 +696,17 @@ public class ResellerStorefrontService {
         // already checks localStorage on load for a pending guest reference
         // scoped to this exact slug and resumes polling immediately.
         return frontendUrlResolver.resolveBaseUrl() + "/store/" + slug;
+    }
+
+    private boolean isMtnRecipientApprovalFailure(UpstreamApiException ex) {
+        String message = ex.getMessage() == null ? "" : ex.getMessage().toLowerCase();
+        return message.contains("not verified") || message.contains("unverified")
+                || (message.contains("not approved") && message.contains("sent for approval"));
+    }
+
+    private String profileSourceName(Order order) {
+        return order.getResellerProfile() == null ? "Storefront customer" :
+                order.getResellerProfile().getEffectiveStoreName() + " storefront customer";
     }
 
     private ResellerProfile findProfileBySlugOrThrow(String slug) {

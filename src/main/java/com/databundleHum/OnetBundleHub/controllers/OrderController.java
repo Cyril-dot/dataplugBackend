@@ -40,6 +40,14 @@ public class OrderController {
         return principal.userId();
     }
 
+    // ── Recipient verification pre-check ─────────────────────────────────────
+    @PostMapping("/recipient-verification/check")
+    @Operation(summary = "Check the manual verification state before placing an order")
+    public ResponseEntity<RecipientVerificationResponse> checkRecipientVerification(
+            @Valid @RequestBody RecipientVerificationRequest request) {
+        return ResponseEntity.ok(orderService.checkRecipientVerification(request));
+    }
+
     // ── Guest checkout ────────────────────────────────────────────────────────
 
     @PostMapping("/guest")

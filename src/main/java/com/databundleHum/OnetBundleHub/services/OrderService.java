@@ -9,6 +9,7 @@ import com.databundleHum.OnetBundleHub.dtos.response.InitiateOrderResponse;
 import com.databundleHum.OnetBundleHub.dtos.response.OrderResponse;
 import com.databundleHum.OnetBundleHub.dtos.response.TopUpInitiateResponse;
 import com.databundleHum.OnetBundleHub.dtos.response.WalletResponse;
+import com.databundleHum.OnetBundleHub.dtos.response.RecipientVerificationResponse;
 import com.databundleHum.OnetBundleHub.entity.Order;
 import com.databundleHum.OnetBundleHub.entity.PlatformSettings;
 import com.databundleHum.OnetBundleHub.entity.ProcessedRef;
@@ -118,12 +119,17 @@ public class OrderService {
     private final FrontendUrlResolver          frontendUrlResolver;
     private final PricingService pricingService;
 
+    public RecipientVerificationResponse checkRecipientVerification(RecipientVerificationRequest request) {
+        return unverifiedRecipientService.check(request.getPhoneNumber(), request.getNetwork());
+    }
+
     // ── Guest checkout: step 1 — initiate ────────────────────────────────────
 
     @Transactional
     public InitiateOrderResponse initiateGuestOrder(InitiateGuestOrderRequest request) {
         log.info("[ORDER] initiateGuestOrder: phone={} network={} gb={}",
                 request.getPhoneNumber(), request.getNetwork(), request.getCapacityGb());
+        unverifiedRecipientService.assertOrderAllowed(request.getPhoneNumber(), request.getNetwork());
 
         PlatformSettings settings = getActiveSettings(
                 request.getNetwork(), request.getCapacityGb());
@@ -397,6 +403,7 @@ public class OrderService {
 
         BigDecimal price = pricingService.resolvePriceForUser(user, settings);
 
+        unverifiedRecipientService.assertOrderAllowed(request.getPhoneNumber(), request.getNetwork());
         rejectPreviouslyUnapprovedMtnRecipient(userId, request);
         rejectIfDuplicate(userId, request.getPhoneNumber(), request.getNetwork(),
                 request.getCapacityGb(), "USER");
@@ -517,6 +524,7 @@ public class OrderService {
                 request.getNetwork(), request.getCapacityGb());
         BigDecimal       costPrice = settings.getResellerPriceGhc();
 
+        unverifiedRecipientService.assertOrderAllowed(request.getPhoneNumber(), request.getNetwork());
         rejectPreviouslyUnapprovedMtnRecipient(userId, request);
         rejectIfDuplicate(userId, request.getPhoneNumber(), request.getNetwork(),
                 request.getCapacityGb(), "RESELLER");
