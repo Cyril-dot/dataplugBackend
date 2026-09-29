@@ -7,6 +7,7 @@ import com.databundleHum.OnetBundleHub.entity.*;
 import com.databundleHum.OnetBundleHub.entity.WalletTransaction.TransactionType;
 import com.databundleHum.OnetBundleHub.repos.*;
 import com.databundleHum.OnetBundleHub.security.*;
+import com.databundleHum.OnetBundleHub.util.DataPackBranding;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.*;
@@ -675,7 +676,7 @@ public class AdminService {
                 .korapayRefundReference(o.getKorapayRefundReference())
                 .korapayRefundStatus(o.getKorapayRefundStatus())
                 .status(o.getStatus().name())
-                .failureReason(o.getFailureReason())
+                .failureReason(DataPackBranding.forDisplay(o.getFailureReason()))
                 .guest(o.isGuest())
                 .storefrontOrder(o.isStorefrontOrder())
                 .resellerStoreName(resellerStoreName)

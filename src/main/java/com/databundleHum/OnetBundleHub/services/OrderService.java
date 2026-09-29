@@ -1,6 +1,7 @@
 package com.databundleHum.OnetBundleHub.services;
 
 import com.databundleHum.OnetBundleHub.config.AppConfig;
+import com.databundleHum.OnetBundleHub.util.DataPackBranding;
 import com.databundleHum.OnetBundleHub.util.FrontendUrlResolver;
 import com.databundleHum.OnetBundleHub.dtos.InitiateGuestOrderRequest;
 import com.databundleHum.OnetBundleHub.dtos.TopUpInitiateRequest;
@@ -247,7 +248,7 @@ public class OrderService {
 
         try {
             KorapayService.RefundInitiation refund = korapayService.initiateFullRefund(
-                    order.getPaystackRef(), refundReference, "BigDreams rejected MTN recipient verification");
+                    order.getPaystackRef(), refundReference, "DataPack could not verify the MTN recipient");
             order.setKorapayRefundStatus(refund.status());
             if ("failed".equalsIgnoreCase(refund.status())) {
                 order.setKorapayRefundFailure("Korapay reported that the refund failed.");
@@ -538,8 +539,9 @@ public class OrderService {
     private String mtnRecipientFailureMessage(UpstreamApiException ex, boolean walletRefunded) {
         String refundMessage = walletRefunded ? "Your wallet has been refunded."
                 : "A Korapay refund request has been started.";
-        String providerDetails = ex.getMessage() == null ? "" : " Provider response: " + ex.getMessage();
-        return "BigDreams rejected this MTN recipient (BENEFICIARY_REQUIRED). The order was not delivered. "
+        String providerDetails = ex.getMessage() == null ? ""
+                : " Diagnostic details: " + DataPackBranding.forDisplay(ex.getMessage());
+        return "DataPack could not verify this MTN recipient (BENEFICIARY_REQUIRED). The order was not delivered. "
                 + refundMessage + providerDetails;
     }
 
@@ -838,7 +840,7 @@ public class OrderService {
                 .korapayRefundReference(o.getKorapayRefundReference())
                 .korapayRefundStatus(o.getKorapayRefundStatus())
                 .status(o.getStatus().name())
-                .failureReason(o.getFailureReason())
+                .failureReason(DataPackBranding.forDisplay(o.getFailureReason()))
                 .guest(o.isGuest())
                 .storefrontOrder(o.isStorefrontOrder())
                 .createdAt(o.getCreatedAt())

@@ -12,7 +12,7 @@ public class RecipientVerificationResponse {
     private String network;
     /** NOT_APPLICABLE or PROVIDER_CHECK_ON_ORDER; local audit states are not order authorization. */
     private String status;
-    /** Informational only; the actual BigDreams order response is authoritative. */
+    /** Informational only; the actual DataPack order response is authoritative. */
     private boolean canPlaceOrder;
     private String message;
     private Integer attempts;

@@ -1,5 +1,6 @@
 package com.databundleHum.OnetBundleHub.services;
 
+import com.databundleHum.OnetBundleHub.util.DataPackBranding;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -87,6 +88,7 @@ public class NotificationService {
     public void sendOrderFailedAlert(String email, String fullName, Long orderId, String failureReason) {
         log.warn("Sending order failed alert: to={} orderId={}", email, orderId);
         String reason = failureReason == null ? "" : failureReason.toLowerCase();
+        String displayFailureReason = DataPackBranding.forDisplay(failureReason);
         boolean recipientUnverified = reason.contains("beneficiary_required")
                 || reason.contains("beneficiary required")
                 || reason.contains("not verified")
@@ -98,7 +100,7 @@ public class NotificationService {
                     + "Your payment has been refunded where applicable. You may try again after the number is verified."
                 : "Hi " + fullName + ",\n\nUnfortunately your data bundle order #" + orderId
                     + " could not be fulfilled. Our support team will review and issue a refund if payment was taken.";
-        if (failureReason != null && !failureReason.isBlank()) message += "\n\nProvider reason: " + failureReason;
+        if (displayFailureReason != null && !displayFailureReason.isBlank()) message += "\n\nDataPack details: " + displayFailureReason;
         sendEmail(email, fullName,
                 recipientUnverified ? "Recipient number is not verified — Order #" + orderId
                         : "Your data bundle order failed — Order #" + orderId,
@@ -107,12 +109,12 @@ public class NotificationService {
 
     @Async
     public void sendMtnRecipientReviewRequiredAlert(String email, String fullName, String phone, String providerReason) {
-        String message = "BigDreams rejected MTN recipient " + phone + " and the order was not delivered. "
-                + "Please review/approve the recipient in BigDreams; this local audit queue does not change provider approval.";
+        String message = "DataPack could not verify MTN recipient " + phone + " and the order was not delivered. "
+                + "Please review recipient eligibility in the provider portal; this local audit queue does not change provider approval.";
         if (providerReason != null && !providerReason.isBlank()) {
-            message += "\n\nProvider response: " + providerReason;
+            message += "\n\nDataPack details: " + DataPackBranding.forDisplay(providerReason);
         }
-        sendEmail(email, fullName, "BigDreams MTN recipient rejection — review required", message + "\n\nTeam DBH");
+        sendEmail(email, fullName, "DataPack MTN recipient verification — review required", message + "\n\nTeam DBH");
     }
 
     @Async

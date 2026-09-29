@@ -2,6 +2,7 @@ package com.databundleHum.OnetBundleHub.services;
 
 import com.databundleHum.OnetBundleHub.config.AppConfig;
 import com.databundleHum.OnetBundleHub.util.FrontendUrlResolver;
+import com.databundleHum.OnetBundleHub.util.DataPackBranding;
 import com.databundleHum.OnetBundleHub.dtos.InitiateGuestStorefrontCheckerOrderRequest;
 import com.databundleHum.OnetBundleHub.dtos.InitiateGuestStorefrontOrderRequest;
 import com.databundleHum.OnetBundleHub.dtos.StorefrontResponse;
@@ -506,7 +507,7 @@ public class ResellerStorefrontService {
                 .pin(finalOrder.getStatus() == CheckerOrder.CheckerOrderStatus.COMPLETED ? finalOrder.getPin() : null)
                 .examDate(finalOrder.getExamDate())
                 .resultsLink(finalOrder.getStatus() == CheckerOrder.CheckerOrderStatus.COMPLETED ? finalOrder.getResultsLink() : null)
-                .failureReason(finalOrder.getFailureReason())
+                .failureReason(DataPackBranding.forDisplay(finalOrder.getFailureReason()))
                 .guest(finalOrder.isGuest())
                 .createdAt(finalOrder.getCreatedAt())
                 .updatedAt(finalOrder.getUpdatedAt())
@@ -764,7 +765,7 @@ public class ResellerStorefrontService {
                 .korapayRefundStatus(o.getKorapayRefundStatus())
                 .authorizationUrl(authorizationUrl)
                 .status(o.getStatus().name())
-                .failureReason(o.getFailureReason())
+                .failureReason(DataPackBranding.forDisplay(o.getFailureReason()))
                 .guest(o.isGuest())
                 .createdAt(o.getCreatedAt())
                 .updatedAt(o.getUpdatedAt())

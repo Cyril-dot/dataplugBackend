@@ -19,6 +19,7 @@ import com.databundleHum.OnetBundleHub.security.ConflictException;
 import com.databundleHum.OnetBundleHub.security.DuplicateOrderException;
 import com.databundleHum.OnetBundleHub.security.ResourceNotFoundException;
 import com.databundleHum.OnetBundleHub.security.UpstreamApiException;
+import com.databundleHum.OnetBundleHub.util.DataPackBranding;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -666,7 +667,7 @@ public class CheckerService {
                 .pin(o.getStatus() == CheckerOrder.CheckerOrderStatus.COMPLETED ? o.getPin() : null)
                 .examDate(o.getExamDate())
                 .resultsLink(o.getStatus() == CheckerOrder.CheckerOrderStatus.COMPLETED ? o.getResultsLink() : null)
-                .failureReason(o.getFailureReason())
+                .failureReason(DataPackBranding.forDisplay(o.getFailureReason()))
                 .guest(o.isGuest())
                 .createdAt(o.getCreatedAt())
                 .updatedAt(o.getUpdatedAt())

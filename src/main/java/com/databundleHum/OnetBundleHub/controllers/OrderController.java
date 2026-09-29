@@ -40,9 +40,9 @@ public class OrderController {
         return principal.userId();
     }
 
-    // ── Informational recipient status; BigDreams validates during ordering ──
+    // ── Informational recipient status; DataPack verifies during ordering ──
     @PostMapping("/recipient-verification/check")
-    @Operation(summary = "Explain that BigDreams checks MTN eligibility during actual order submission")
+    @Operation(summary = "Explain that DataPack checks MTN eligibility during actual order submission")
     public ResponseEntity<RecipientVerificationResponse> checkRecipientVerification(
             @Valid @RequestBody RecipientVerificationRequest request) {
         return ResponseEntity.ok(orderService.checkRecipientVerification(request));
