@@ -16,8 +16,8 @@ public class StoreShareResponse {
     private String storeName;
     /** URL-safe slug, e.g. "kwame-data". */
     private String storeSlug;
-    /** Full store URL, e.g. "https://yourdomain.com/store/kwame-data". */
+    /** Full store URL, e.g. "https://www.datapackk.shop/store/kwame-data". */
     private String storeUrl;
-    /** Full referral URL, e.g. "https://yourdomain.com/ref/kwame-data". */
+    /** Full referral URL, e.g. "https://www.datapackk.shop/ref/kwame-data". */
     private String referralUrl;
 }

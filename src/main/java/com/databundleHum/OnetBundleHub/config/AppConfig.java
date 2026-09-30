@@ -57,8 +57,8 @@ public class AppConfig {
 
     // ── Platform ──────────────────────────────────────────────────────────────
 
-    @Value("${app.base-url:http://localhost:8080}")
-    private String appBaseUrl;
+    /** Canonical public site URL used in referral links and non-browser redirects. */
+    private String appBaseUrl = "https://www.datapackk.shop";
 
     // ── WebClient bean ────────────────────────────────────────────────────────
 

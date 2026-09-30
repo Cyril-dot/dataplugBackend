@@ -685,7 +685,7 @@ public class ResellerStorefrontService {
 
     private String buildRedirectUrl(String slug) {
         // ✅ Resolved dynamically from the actual calling frontend's
-        // Origin/Referer header instead of the static app.base-url config.
+        // Origin/Referer header instead of the canonical site URL fallback.
         //
         // ── FIX: this previously always pointed at the generic
         // /payment/callback page, which is a bare, unwired leftover with no

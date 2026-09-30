@@ -77,16 +77,16 @@ public class CheckerService {
     /** Must match OrderService.PROCESSING_CHARGE_RATE for consistency across products. */
     private static final BigDecimal PROCESSING_CHARGE_RATE = new BigDecimal("0.10");
 
-    private static final String SITE_PREFIX = "databaygh.shop";
+    private static final String SITE_PREFIX = "datapackk.shop";
 
     // ✅ FIXED — confirmed via live Railway logs: Korapay rejects any
     // reference containing a period with a 422 ("reference must only
     // contain alphanumeric, hyphen and underscore characters"). SITE_PREFIX
     // itself must keep its dot (it's also used to build the payer email
-    // domain, e.g. "0244...@databaygh.shop", where a dot is required) —
+    // domain, e.g. "0244...@datapackk.shop", where a dot is required) —
     // this is a separate, sanitized value used ONLY when building the
     // reference string sent to Korapay.
-    private static final String REFERENCE_PREFIX = "databaygh-shop";
+    private static final String REFERENCE_PREFIX = "datapackk-shop";
 
     private final CheckerOrderRepository     checkerOrderRepository;
     private final CheckerPricingRepository   checkerPricingRepository;
@@ -602,8 +602,7 @@ public class CheckerService {
     private String buildRedirectUrl() {
         // ✅ Resolved dynamically from the actual calling frontend's
         // Origin/Referer header (see FrontendUrlResolver) instead of the
-        // static app.base-url config, which requires remembering to update
-        // it every time the frontend's domain changes.
+        // hard-coded canonical site URL fallback.
         //
         // ── FIX: this previously pointed at /payment/callback, an old,
         // unmaintained page from before the checker/buy flow had polling,

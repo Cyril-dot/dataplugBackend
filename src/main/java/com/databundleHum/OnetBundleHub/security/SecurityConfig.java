@@ -29,9 +29,11 @@ import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import java.io.IOException;
-import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.springframework.security.config.Customizer.withDefaults;
 
@@ -58,7 +60,11 @@ public class SecurityConfig {
     private final UserDetailsService userDetailsService;
     private final ObjectMapper       objectMapper;
 
-    @Value("${app.cors.allowed-origins:http://localhost:3000,http://localhost:4028,http://localhost:5173,https://data-bay-gh.vercel.app,https://databaygh.shop,https://www.databaygh.shop,https://datapack-lac.vercel.app,https://datapack.shop,https://www.datapack.shop,https://cosigner-mold-april.ngrok-free.dev}")
+    private static final List<String> REQUIRED_SITE_ORIGINS = List.of(
+            "https://datapackk.shop",
+            "https://www.datapackk.shop");
+
+    @Value("${app.cors.allowed-origins:http://localhost:3000,http://localhost:4028,http://localhost:5173,https://datapackk.shop,https://www.datapackk.shop}")
     private String allowedOrigins;
 
     @Bean
@@ -221,7 +227,14 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(Arrays.asList(allowedOrigins.split(",")));
+        Set<String> corsOrigins = new LinkedHashSet<>();
+        for (String origin : allowedOrigins.split(",")) {
+            if (!origin.isBlank()) {
+                corsOrigins.add(origin.trim());
+            }
+        }
+        corsOrigins.addAll(REQUIRED_SITE_ORIGINS);
+        configuration.setAllowedOrigins(new ArrayList<>(corsOrigins));
         configuration.setAllowedMethods(
                 List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(

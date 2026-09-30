@@ -91,7 +91,7 @@ public class OrderService {
      * Bare site domain (no scheme, no "www.") used to prefix Korapay references,
      * build payer email addresses and label customers in metadata.
      */
-    private static final String SITE_PREFIX = "databaygh.shop";
+    private static final String SITE_PREFIX = "datapackk.shop";
 
     // ✅ FIXED — same bug confirmed live on the Korapay checker path
     // (Railway logs: 422 "reference must only contain alphanumeric, hyphen
@@ -100,7 +100,7 @@ public class OrderService {
     // this sanitized prefix (no dot) is now used for every reference built
     // here, while SITE_PREFIX (with its dot) stays as-is for the payer
     // email domain and free-text metadata, where a dot is fine/required.
-    private static final String REFERENCE_PREFIX = "databaygh-shop";
+    private static final String REFERENCE_PREFIX = "datapackk-shop";
 
     private final OrderRepository             orderRepository;
     private final UserRepository              userRepository;
@@ -765,7 +765,7 @@ public class OrderService {
     private String buildRedirectUrl() {
         // ✅ Now resolved dynamically from the actual calling frontend's
         // Origin/Referer header (see FrontendUrlResolver) instead of the
-        // static app.base-url config.
+        // hard-coded canonical site URL fallback.
         return frontendUrlResolver.resolveBaseUrl() + "/payment/callback";
     }
 

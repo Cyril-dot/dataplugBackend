@@ -10,22 +10,9 @@ import java.net.MalformedURLException;
 import java.net.URL;
 
 /**
- * Resolves the frontend's actual base URL for building payment redirect
- * URLs, instead of relying solely on the static app.base-url config
- * property.
- *
- * ── Why this exists ──────────────────────────────────────────────────────
- * app.base-url defaults to a hardcoded fallback (https://www.databaygh.shop)
- * when the APP_BASE_URL env var isn't set on whatever platform is hosting
- * this backend. That's easy to forget to update — exactly what happened
- * moving from the old host to Railway/Vercel, silently sending Korapay
- * redirect URLs pointing at a stale domain. Browsers automatically send an
- * Origin header on cross-origin requests (which every call from the
- * Vercel-hosted frontend to this Railway-hosted backend is), so reading
- * that header resolves the ACTUAL calling frontend's URL dynamically —
- * correct for local dev, Vercel preview deployments, and production alike,
- * with zero config to keep in sync. Falls back to app.base-url only for
- * non-browser calls where no Origin/Referer header is present at all.
+ * Resolves the frontend's actual base URL for payment redirects from the
+ * request Origin/Referer, falling back to AppConfig's hard-coded canonical
+ * DataPack URL when neither header is present.
  */
 @Slf4j
 @Component
@@ -35,7 +22,7 @@ public class FrontendUrlResolver {
     private final HttpServletRequest request;
     private final AppConfig appConfig;
 
-    /** Returns a base URL with no trailing slash, e.g. "https://datapack-lac.vercel.app". */
+    /** Returns a base URL with no trailing slash, e.g. "https://www.datapackk.shop". */
     public String resolveBaseUrl() {
         String origin = request.getHeader("Origin");
         if (origin != null && !origin.isBlank()) {
@@ -56,7 +43,7 @@ public class FrontendUrlResolver {
         }
 
         String fallback = stripTrailingSlash(appConfig.getAppBaseUrl());
-        log.debug("[FRONTEND-URL] No Origin/Referer header — falling back to app.base-url: {}", fallback);
+        log.debug("[FRONTEND-URL] No Origin/Referer header — falling back to canonical site URL: {}", fallback);
         return fallback;
     }
 
