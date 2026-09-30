@@ -142,6 +142,22 @@ public class AdminController {
         return ResponseEntity.ok(adminService.getUser(userId));
     }
 
+    @PostMapping("/users/{userId}/wallet-adjustment")
+    @Operation(summary = "Credit or debit a user's wallet with an audited reason")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Wallet adjusted"),
+            @ApiResponse(responseCode = "400", description = "Invalid adjustment or insufficient wallet balance"),
+            @ApiResponse(responseCode = "404", description = "User not found")
+    })
+    public ResponseEntity<AdminUserResponse> adjustUserWallet(
+            @PathVariable UUID userId,
+            @Valid @RequestBody AdminWalletAdjustmentRequest request) {
+        UUID adminId = currentAdminId();
+        log.info("[ADMIN] Wallet adjustment requested: adminId={} userId={} action={} amount={}",
+                adminId, userId, request.getAction(), request.getAmount());
+        return ResponseEntity.ok(adminService.adjustUserWallet(adminId, userId, request));
+    }
+
     @PatchMapping("/users/{userId}/active")
     @Operation(summary = "Activate or deactivate a user account")
     @ApiResponses({

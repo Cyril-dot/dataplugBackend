@@ -191,6 +191,28 @@ public class AdminService {
     }
 
     @Transactional
+    public AdminUserResponse adjustUserWallet(UUID adminId, UUID targetUserId,
+                                              AdminWalletAdjustmentRequest request) {
+        String reason = request.getReason().trim();
+        boolean credit = request.getAction() == AdminWalletAdjustmentRequest.Action.CREDIT;
+        TransactionType transactionType = credit ? TransactionType.ADMIN_CREDIT : TransactionType.ADMIN_DEBIT;
+        String action = credit ? "credit" : "debit";
+        String description = "Admin wallet " + action + " by adminId=" + adminId + ". Reason: " + reason;
+        String reference = "ADMIN_WALLET_" + request.getAction().name() + "_" + UUID.randomUUID();
+
+        if (credit) {
+            walletService.credit(targetUserId, request.getAmount(), transactionType, description, reference);
+        } else {
+            walletService.debit(targetUserId, request.getAmount(), transactionType, description, reference);
+        }
+
+        BigDecimal updatedBalance = walletService.getBalance(targetUserId);
+        log.info("Admin wallet {} completed: adminId={} targetUserId={} amount={} balanceAfter={} reference={}",
+                action, adminId, targetUserId, request.getAmount(), updatedBalance, reference);
+        return toUserResponse(findUserOrThrow(targetUserId));
+    }
+
+    @Transactional
     public AdminUserResponse setUserActive(UUID adminId, UUID targetUserId, boolean active) {
         User target = findUserOrThrow(targetUserId);
         target.setActive(active);

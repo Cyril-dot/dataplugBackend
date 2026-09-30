@@ -17,6 +17,8 @@ import java.time.Instant;
  *  RESELLER_FEE                 — GHS 20 deducted on reseller application
  *  PAYOUT                       — reseller profit paid out (debits wallet on admin approval)
  *  REFUND                       — order refund credited back to wallet after failed delivery
+ *  ADMIN_CREDIT                 — wallet credit manually applied by a Super Admin
+ *  ADMIN_DEBIT                  — wallet debit manually applied by a Super Admin
  *  AFFILIATE_COMMISSION         — 2% commission credited when a referred user's order delivers
  *  AFFILIATE_COMMISSION_REVERSAL— commission clawed back when the underlying order is refunded
  */
@@ -44,8 +46,8 @@ public class WalletTransaction {
     /**
      * Absolute amount in GHS (always positive).
      * Direction (credit vs debit) is inferred from the TransactionType:
-     *   Credits: TOPUP, REFUND, AFFILIATE_COMMISSION
-     *   Debits:  PURCHASE, RESELLER_FEE, PAYOUT, AFFILIATE_COMMISSION_REVERSAL
+     *   Credits: TOPUP, REFUND, ADMIN_CREDIT, AFFILIATE_COMMISSION
+     *   Debits:  PURCHASE, RESELLER_FEE, PAYOUT, ADMIN_DEBIT, AFFILIATE_COMMISSION_REVERSAL
      */
     @Column(nullable = false, precision = 10, scale = 2)
     private BigDecimal amount;
@@ -89,6 +91,12 @@ public class WalletTransaction {
          * Also used when an admin rejects a reseller application (registration fee refund).
          */
         REFUND,
+
+        /** Wallet credit applied manually by a Super Admin with an audit reason. */
+        ADMIN_CREDIT,
+
+        /** Wallet debit applied manually by a Super Admin with an audit reason. */
+        ADMIN_DEBIT,
 
         /**
          * 2% affiliate commission credited to the referring affiliate's wallet
