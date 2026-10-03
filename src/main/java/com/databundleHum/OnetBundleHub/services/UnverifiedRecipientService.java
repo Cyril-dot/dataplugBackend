@@ -3,6 +3,8 @@ package com.databundleHum.OnetBundleHub.services;
 import com.databundleHum.OnetBundleHub.entity.PlatformSettings;
 import com.databundleHum.OnetBundleHub.entity.UnverifiedRecipient;
 import com.databundleHum.OnetBundleHub.dtos.response.RecipientVerificationResponse;
+import com.databundleHum.OnetBundleHub.dtos.response.BulkNumberVerificationResponse;
+import com.databundleHum.OnetBundleHub.entity.User;
 import com.databundleHum.OnetBundleHub.repos.UnverifiedRecipientRepository;
 import com.databundleHum.OnetBundleHub.repos.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -11,7 +13,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
 import java.time.*;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -74,12 +80,72 @@ public class UnverifiedRecipientService {
         return repository.findByLastFailedAtBetweenOrderByLastFailedAtDesc(from, to);
     }
 
+    /**
+     * Accepts one or many numbers from any authenticated role. The phone/network
+     * unique constraint is also enforced in the service so duplicates in a paste
+     * are removed before they reach the admin queue.
+     */
+    @Transactional
+    public BulkNumberVerificationResponse submitNumbers(UUID userId, List<String> numbers,
+                                                        PlatformSettings.Network network) {
+        User submitter = userRepository.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("Submitting account was not found"));
+        Set<String> uniqueNumbers = new LinkedHashSet<>();
+        int invalid = 0;
+        int duplicates = 0;
+        for (String value : numbers) {
+            String normalized = normalizePhone(value);
+            if (normalized.length() < 7 || normalized.length() > 15) {
+                invalid++;
+            } else if (!uniqueNumbers.add(normalized)) {
+                duplicates++;
+            }
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        List<UnverifiedRecipient> records = new ArrayList<>();
+        for (String phone : uniqueNumbers) {
+            UnverifiedRecipient item = repository.findByPhoneNumberAndNetwork(phone, network).orElse(null);
+            if (item == null) {
+                item = UnverifiedRecipient.builder()
+                        .phoneNumber(phone)
+                        .network(network)
+                        .failureReason("Submitted by user for verification")
+                        .sourceEmail(submitter.getEmail())
+                        .sourceFullName(submitter.getFullName())
+                        .submittedBy(submitter)
+                        .submissionSource("USER_SUBMISSION")
+                        .status(UnverifiedRecipient.ReviewStatus.SUBMITTED)
+                        .firstFailedAt(now)
+                        .lastFailedAt(now)
+                        .build();
+            } else {
+                item.setSourceEmail(submitter.getEmail());
+                item.setSourceFullName(submitter.getFullName());
+                item.setSubmittedBy(submitter);
+                item.setSubmissionSource("USER_SUBMISSION");
+                item.setLastFailedAt(now);
+                if (item.getStatus() != UnverifiedRecipient.ReviewStatus.VERIFIED) {
+                    item.setStatus(UnverifiedRecipient.ReviewStatus.SUBMITTED);
+                }
+            }
+            records.add(repository.save(item));
+        }
+        return BulkNumberVerificationResponse.builder()
+                .submitted(records.size())
+                .duplicatesRemoved(duplicates)
+                .invalidNumbers(invalid)
+                .records(records)
+                .build();
+    }
+
     public byte[] csv(LocalDate date) {
-        StringBuilder out = new StringBuilder("id,phone_number,network,attempts,status,source_email,source_full_name,failure_reason,first_failed_at,last_failed_at\n");
+        StringBuilder out = new StringBuilder("id,phone_number,network,attempts,status,submission_source,source_email,source_full_name,failure_reason,first_failed_at,last_failed_at\n");
         for (UnverifiedRecipient item : daily(date)) {
             out.append(item.getId()).append(',').append(csv(item.getPhoneNumber())).append(',')
                     .append(item.getNetwork()).append(',').append(item.getAttempts()).append(',')
-                    .append(item.getStatus()).append(',').append(csv(item.getSourceEmail())).append(',')
+                    .append(item.getStatus()).append(',').append(csv(item.getSubmissionSource())).append(',')
+                    .append(csv(item.getSourceEmail())).append(',')
                     .append(csv(item.getSourceFullName())).append(',').append(csv(item.getFailureReason())).append(',')
                     .append(item.getFirstFailedAt()).append(',').append(item.getLastFailedAt()).append('\n');
         }

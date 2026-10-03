@@ -2,6 +2,7 @@ package com.databundleHum.OnetBundleHub.entity;
 
 import jakarta.persistence.*;
 import lombok.*;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 
 import java.time.LocalDateTime;
 
@@ -54,6 +55,15 @@ public class UnverifiedRecipient {
 
     @Column(name = "last_notified_at")
     private LocalDateTime lastNotifiedAt;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "submitted_by_user_id")
+    @JsonIgnore
+    private User submittedBy;
+
+    @Column(name = "submission_source", length = 30)
+    @Builder.Default
+    private String submissionSource = "ORDER_FAILURE";
 
     public enum ReviewStatus { UNVERIFIED, SUBMITTED, VERIFIED }
 }
