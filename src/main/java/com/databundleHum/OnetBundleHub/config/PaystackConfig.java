@@ -7,30 +7,21 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.reactive.function.client.WebClient;
 
-/**
- * WebClient + credentials for the Korapay Provider API.
- *
- * Set in application.properties:
- *   korapay.secret-key=sk_live_your_key_here   (or sk_test_... for sandbox)
- *   korapay.base-url=https://api.korapay.com    (optional, defaults below)
- */
 @Slf4j
 @Getter
 @Configuration
-public class KorapayConfig {
+public class PaystackConfig {
 
-    @Value("${korapay.secret-key}")
+    @Value("${paystack.secret-key}")
     private String secretKey;
 
-    @Value("${korapay.base-url:https://api.korapay.com}")
+    @Value("${paystack.base-url:https://api.paystack.co}")
     private String baseUrl;
 
     @Bean
-    public WebClient korapayWebClient() {
-        log.info("[KORAPAY-CONFIG] Building korapayWebClient — baseUrl={} secretKeyPrefix={}",
-                baseUrl,
-                secretKey != null ? secretKey.substring(0, Math.min(10, secretKey.length())) + "..." : "NULL");
-
+    public WebClient paystackWebClient() {
+        log.info("[PAYSTACK-CONFIG] Building paystackWebClient: baseUrl={} secretKeyPresent={}",
+                baseUrl, secretKey != null && !secretKey.isBlank());
         return WebClient.builder()
                 .baseUrl(baseUrl)
                 .defaultHeader("Authorization", "Bearer " + secretKey)

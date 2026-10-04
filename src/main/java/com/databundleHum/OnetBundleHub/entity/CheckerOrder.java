@@ -147,7 +147,7 @@ public class CheckerOrder {
     // ── Enums ─────────────────────────────────────────────────────────────────
 
     public enum PaymentMethod {
-        WALLET, KORAPAY
+        WALLET, PAYSTACK, KORAPAY
     }
 
     public enum CheckerOrderStatus {

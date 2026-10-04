@@ -59,7 +59,7 @@ import java.util.UUID;
  * top-up time.
  *
  * ── MIGRATION FROM PAYSTACK TO KORAPAY (2026-08-26) ──────────────────────────
- * Runs entirely on KorapayService now. Key differences from Paystack:
+ * Runs entirely on PaystackService now. Key differences from Paystack:
  *   - Amounts are in GHS directly, not pesewas — no toSmallestUnit() calls.
  *   - initiateTransaction() returns "checkout_url" not "authorization_url"
  *     (DTO field name authorizationUrl kept for compatibility, holds the
@@ -108,7 +108,7 @@ public class OrderService {
     private final ProcessedRefRepository      processedRefRepository;
     private final WalletTopUpRepository       walletTopUpRepository;
     private final WalletService               walletService;
-    private final KorapayService              korapayService;
+    private final PaystackService              paystackService;
     private final BigDreamsDataService          bigDreamsDataService;
     private final NotificationService         notificationService;
     private final UnverifiedRecipientService  unverifiedRecipientService;
@@ -151,7 +151,7 @@ public class OrderService {
         BigDecimal basePriceGhc = settings.getPublicPriceGhc();
         BigDecimal chargeAmountGhc = addProcessingCharge(basePriceGhc);
 
-        String reference  = REFERENCE_PREFIX + "-" + korapayService.generateReference();
+        String reference  = REFERENCE_PREFIX + "-" + paystackService.generateReference();
         String guestEmail = buildPayerEmail(request.getPhoneNumber());
 
         Map<String, Object> metadata = new HashMap<>();
@@ -162,7 +162,7 @@ public class OrderService {
         metadata.put("baseAmountGhc", basePriceGhc.toPlainString());
         metadata.put("customerName", request.getPhoneNumber() + " - " + SITE_PREFIX);
 
-        Map<String, Object> korapayData = korapayService.initiateTransaction(
+        Map<String, Object> paystackData = paystackService.initiateTransaction(
                 guestEmail,
                 request.getPhoneNumber(),
                 chargeAmountGhc,
@@ -193,8 +193,9 @@ public class OrderService {
 
         return InitiateOrderResponse.builder()
                 .paystackReference(reference)
-                .authorizationUrl((String) korapayData.get("checkout_url"))
+                .authorizationUrl((String) paystackData.get("checkout_url"))
                 .amountGhc(chargeAmountGhc)
+                .amountPesewas(chargeAmountGhc.multiply(BigDecimal.valueOf(100)).longValueExact())
                 .email(guestEmail)
                 .phoneNumber(request.getPhoneNumber())
                 .network(request.getNetwork().name())
@@ -247,7 +248,7 @@ public class OrderService {
         orderRepository.save(order);
 
         try {
-            KorapayService.RefundInitiation refund = korapayService.initiateFullRefund(
+            PaystackService.RefundInitiation refund = paystackService.initiateFullRefund(
                     order.getPaystackRef(), refundReference, "DataPack could not verify the MTN recipient");
             order.setKorapayRefundStatus(refund.status());
             if ("failed".equalsIgnoreCase(refund.status())) {
@@ -321,7 +322,7 @@ public class OrderService {
         log.info("[ORDER] initiateTopUp: userId={} amount={}", userId, request.getAmount());
 
         User   user      = findUserOrThrow(userId);
-        String reference = REFERENCE_PREFIX + "-" + korapayService.generateReference();
+        String reference = REFERENCE_PREFIX + "-" + paystackService.generateReference();
 
         BigDecimal baseAmountGhc = request.getAmount();
         BigDecimal chargeAmountGhc = addProcessingCharge(baseAmountGhc);
@@ -345,7 +346,7 @@ public class OrderService {
         metadata.put("baseAmountGhc", baseAmountGhc.toPlainString());
         metadata.put("customerName", user.getFullName() + " - " + SITE_PREFIX);
 
-        Map<String, Object> korapayData = korapayService.initiateTransaction(
+        Map<String, Object> paystackData = paystackService.initiateTransaction(
                 user.getEmail(),
                 user.getFullName(),
                 chargeAmountGhc,
@@ -360,8 +361,9 @@ public class OrderService {
         return TopUpInitiateResponse.builder()
                 .paystackReference(reference)
                 .amountGhc(chargeAmountGhc)
+                .amountPesewas(chargeAmountGhc.multiply(BigDecimal.valueOf(100)).longValueExact())
                 .email(user.getEmail())
-                .authorizationUrl((String) korapayData.get("checkout_url"))
+                .authorizationUrl((String) paystackData.get("checkout_url"))
                 .build();
     }
 
@@ -391,8 +393,8 @@ public class OrderService {
                         "No WalletTopUp record found for ref=" + reference
                                 + " — cannot credit without a known userId"));
 
-        Map<String, Object> txData          = korapayService.verifyTransaction(reference);
-        BigDecimal          chargedAmountGhc = korapayService.extractAmountGhc(txData);
+        Map<String, Object> txData          = paystackService.verifyTransaction(reference);
+        BigDecimal          chargedAmountGhc = paystackService.extractAmountGhc(txData);
         BigDecimal          baseAmountGhc    = removeProcessingCharge(chargedAmountGhc);
 
         walletService.credit(topUp.getUserId(), baseAmountGhc, TransactionType.TOPUP,
@@ -425,9 +427,9 @@ public class OrderService {
                     .build();
         }
 
-        Map<String, Object> txData         = korapayService.verifyTransaction(
+        Map<String, Object> txData         = paystackService.verifyTransaction(
                 request.getPaystackRef());
-        BigDecimal          chargedAmountGhc = korapayService.extractAmountGhc(txData);
+        BigDecimal          chargedAmountGhc = paystackService.extractAmountGhc(txData);
         BigDecimal          baseAmountGhc    = removeProcessingCharge(chargedAmountGhc);
 
         walletService.credit(userId, baseAmountGhc, TransactionType.TOPUP,

@@ -75,7 +75,7 @@ public class ResellerStorefrontService {
     private final OrderRepository            orderRepository;
     private final UserRepository             userRepository;
     private final WalletService              walletService;
-    private final KorapayService             korapayService;
+    private final PaystackService             paystackService;
     private final BigDreamsDataService          bigDreamsDataService;
     private final NotificationService        notificationService;
     private final UnverifiedRecipientService unverifiedRecipientService;
@@ -163,11 +163,11 @@ public class ResellerStorefrontService {
         BigDecimal sellingPrice = pricing.getSellingPriceGhc();
         BigDecimal costPrice    = settings.getResellerPriceGhc();
 
-        String reference  = korapayService.generateReference();
+        String reference  = paystackService.generateReference();
         String guestEmail = buildGuestEmail(request.getPhoneNumber());
         String customerName = profile.getEffectiveStoreName() + " Customer";
 
-        Map<String, Object> korapayData = korapayService.initiateTransaction(
+        Map<String, Object> paystackData = paystackService.initiateTransaction(
                 guestEmail,
                 customerName,
                 sellingPrice,
@@ -182,7 +182,7 @@ public class ResellerStorefrontService {
                 )
         );
 
-        String authorizationUrl = (String) korapayData.get("checkout_url");
+        String authorizationUrl = (String) paystackData.get("checkout_url");
 
         Order order = Order.builder()
                 .phoneNumber(request.getPhoneNumber())
@@ -336,7 +336,7 @@ public class ResellerStorefrontService {
 
         BigDecimal sellingPrice = pricing.getSellingPriceGhc();
 
-        String reference = korapayService.generateReference();
+        String reference = paystackService.generateReference();
         String guestEmail = buildGuestEmail(request.getPhoneNumber());
         String customerName = profile.getEffectiveStoreName() + " Customer";
 
@@ -346,14 +346,14 @@ public class ResellerStorefrontService {
         metadata.put("examType",          request.getExamType().name());
         metadata.put("resellerProfileId", profile.getId().toString());
 
-        Map<String, Object> korapayData = korapayService.initiateTransaction(
+        Map<String, Object> paystackData = paystackService.initiateTransaction(
                 guestEmail, customerName, sellingPrice, reference, buildRedirectUrl(slug), metadata);
 
         CheckerOrder order = CheckerOrder.builder()
                 .phoneNumber(request.getPhoneNumber())
                 .examType(request.getExamType())
                 .priceGhc(sellingPrice)
-                .paymentMethod(CheckerOrder.PaymentMethod.KORAPAY)
+                .paymentMethod(CheckerOrder.PaymentMethod.PAYSTACK)
                 .gatewayRef(reference)
                 .status(CheckerOrder.CheckerOrderStatus.PENDING)
                 .guest(true)
@@ -367,7 +367,7 @@ public class ResellerStorefrontService {
 
         return InitiateCheckerOrderResponse.builder()
                 .gatewayRef(reference)
-                .checkoutUrl((String) korapayData.get("checkout_url"))
+                .checkoutUrl((String) paystackData.get("checkout_url"))
                 .amountGhc(sellingPrice)
                 .phoneNumber(request.getPhoneNumber())
                 .examType(request.getExamType().name())

@@ -93,7 +93,7 @@ public class CheckerService {
     private final CheckerStockRepository     checkerStockRepository;
     private final UserRepository             userRepository;
     private final WalletService              walletService;
-    private final KorapayService             korapayService;
+    private final PaystackService             paystackService;
     private final NotificationService        notificationService;
     private final com.databundleHum.OnetBundleHub.config.AppConfig appConfig;
     private final com.databundleHum.OnetBundleHub.util.FrontendUrlResolver frontendUrlResolver;
@@ -109,7 +109,7 @@ public class CheckerService {
         BigDecimal basePriceGhc = pricing.getPublicPriceGhc();
         BigDecimal chargeAmountGhc = addProcessingCharge(basePriceGhc);
 
-        String reference = REFERENCE_PREFIX + "-" + korapayService.generateReference();
+        String reference = REFERENCE_PREFIX + "-" + paystackService.generateReference();
         String guestEmail = buildPayerEmail(request.getPhoneNumber());
 
         Map<String, Object> metadata = new HashMap<>();
@@ -119,7 +119,7 @@ public class CheckerService {
         metadata.put("baseAmountGhc", basePriceGhc.toPlainString());
         metadata.put("customerName",  request.getPhoneNumber() + " - " + SITE_PREFIX);
 
-        Map<String, Object> korapayData = korapayService.initiateTransaction(
+        Map<String, Object> paystackData = paystackService.initiateTransaction(
                 guestEmail,
                 request.getPhoneNumber(),
                 chargeAmountGhc,
@@ -132,7 +132,7 @@ public class CheckerService {
                 .phoneNumber(request.getPhoneNumber())
                 .examType(request.getExamType())
                 .priceGhc(basePriceGhc)
-                .paymentMethod(CheckerOrder.PaymentMethod.KORAPAY)
+                .paymentMethod(CheckerOrder.PaymentMethod.PAYSTACK)
                 .gatewayRef(reference)
                 .status(CheckerOrder.CheckerOrderStatus.PENDING)
                 .guest(true)
@@ -147,7 +147,7 @@ public class CheckerService {
 
         return InitiateCheckerOrderResponse.builder()
                 .gatewayRef(reference)
-                .checkoutUrl((String) korapayData.get("checkout_url"))
+                .checkoutUrl((String) paystackData.get("checkout_url"))
                 .amountGhc(chargeAmountGhc)
                 .phoneNumber(request.getPhoneNumber())
                 .examType(request.getExamType().name())
