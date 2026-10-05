@@ -768,7 +768,9 @@ public class OrderService {
         // ✅ Now resolved dynamically from the actual calling frontend's
         // Origin/Referer header (see FrontendUrlResolver) instead of the
         // hard-coded canonical site URL fallback.
-        return frontendUrlResolver.resolveBaseUrl() + "/payment/callback";
+        // Paystack must return customers to the main dashboard, not the old
+        // checker/payment callback screen.
+        return frontendUrlResolver.resolveBaseUrl() + "/dashboard";
     }
 
     private void rejectIfDuplicate(UUID userId, String phoneNumber,
