@@ -71,6 +71,11 @@ public class WebhookController {
         String type = resolveTransactionType(reference);
         log.info("[PAYSTACK-WEBHOOK] charge.success ref={} type={}", reference, type);
         try {
+            // A redirect/callback or even an untrusted event payload is never
+            // enough to fulfil anything. Re-check the transaction against
+            // Paystack immediately before changing application state. This
+            // also makes webhook retries safe for delayed/failed payments.
+            paystackService.verifyTransaction(reference);
             switch (type) {
                 case "CHECKER_ORDER" -> checkerService.fulfilCheckerKorapayOrder(reference);
                 case "WALLET_TOPUP" -> orderService.processTopUpWebhook(reference);

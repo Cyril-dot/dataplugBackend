@@ -388,13 +388,20 @@ public class OrderService {
             return;
         }
 
-        WalletTopUp topUp = walletTopUpRepository.findByGatewayRef(reference)
+        WalletTopUp topUp = walletTopUpRepository.findByGatewayRefForUpdate(reference)
                 .orElseThrow(() -> new UpstreamApiException(
                         "No WalletTopUp record found for ref=" + reference
                                 + " — cannot credit without a known userId"));
 
+        if (topUp.getStatus() != WalletTopUp.Status.PENDING) {
+            log.info("[ORDER] Top-up is already resolved; no credit applied: ref={} status={}",
+                    reference, topUp.getStatus());
+            return;
+        }
+
         Map<String, Object> txData          = paystackService.verifyTransaction(reference);
         BigDecimal          chargedAmountGhc = paystackService.extractAmountGhc(txData);
+        assertTopUpChargeMatches(topUp, chargedAmountGhc, reference);
         BigDecimal          baseAmountGhc    = removeProcessingCharge(chargedAmountGhc);
 
         walletService.credit(topUp.getUserId(), baseAmountGhc, TransactionType.TOPUP,
@@ -419,8 +426,16 @@ public class OrderService {
     public WalletResponse verifyTopUp(UUID userId, TopUpVerifyRequest request) {
         log.info("[ORDER] verifyTopUp: userId={} ref={}", userId, request.getPaystackRef());
 
-        if (processedRefRepository.existsByReference(request.getPaystackRef())) {
-            log.info("[ORDER] Top-up already processed: ref={}", request.getPaystackRef());
+        WalletTopUp topUp = walletTopUpRepository.findByGatewayRefForUpdate(request.getPaystackRef())
+                .orElseThrow(() -> new ValidationException(
+                        "This payment reference is not a valid pending wallet top-up."));
+        if (!userId.equals(topUp.getUserId())) {
+            throw new ValidationException("This payment reference does not belong to the current account.");
+        }
+        if (topUp.getStatus() != WalletTopUp.Status.PENDING
+                || processedRefRepository.existsByReference(request.getPaystackRef())) {
+            log.info("[ORDER] Top-up already processed: ref={} status={}",
+                    request.getPaystackRef(), topUp.getStatus());
             return WalletResponse.builder()
                     .userId(userId)
                     .balance(walletService.getBalance(userId))
@@ -430,9 +445,10 @@ public class OrderService {
         Map<String, Object> txData         = paystackService.verifyTransaction(
                 request.getPaystackRef());
         BigDecimal          chargedAmountGhc = paystackService.extractAmountGhc(txData);
+        assertTopUpChargeMatches(topUp, chargedAmountGhc, request.getPaystackRef());
         BigDecimal          baseAmountGhc    = removeProcessingCharge(chargedAmountGhc);
 
-        walletService.credit(userId, baseAmountGhc, TransactionType.TOPUP,
+        walletService.credit(topUp.getUserId(), baseAmountGhc, TransactionType.TOPUP,
                 "Wallet top-up (manual verify)", request.getPaystackRef());
 
         processedRefRepository.save(ProcessedRef.builder()
@@ -444,11 +460,9 @@ public class OrderService {
         // which path (webhook or manual verify) actually completes it
         // first — purely for accurate admin/reporting history, since the
         // idempotency guard above already prevents any double-credit.
-        walletTopUpRepository.findByGatewayRef(request.getPaystackRef()).ifPresent(topUp -> {
-            topUp.setStatus(WalletTopUp.Status.COMPLETED);
-            topUp.setCompletedAt(LocalDateTime.now());
-            walletTopUpRepository.save(topUp);
-        });
+        topUp.setStatus(WalletTopUp.Status.COMPLETED);
+        topUp.setCompletedAt(LocalDateTime.now());
+        walletTopUpRepository.save(topUp);
 
         log.info("[ORDER] Manual top-up verify success: userId={} chargedAmount={} creditedAmount={} ref={}",
                 userId, chargedAmountGhc, baseAmountGhc, request.getPaystackRef());
@@ -827,6 +841,16 @@ public class OrderService {
     private BigDecimal removeProcessingCharge(BigDecimal chargedAmountGhc) {
         return chargedAmountGhc
                 .divide(BigDecimal.ONE.add(PROCESSING_CHARGE_RATE), 2, RoundingMode.HALF_UP);
+    }
+
+    private void assertTopUpChargeMatches(WalletTopUp topUp, BigDecimal chargedAmountGhc,
+                                          String reference) {
+        if (chargedAmountGhc == null || topUp.getChargeAmountGhc() == null
+                || topUp.getChargeAmountGhc().compareTo(chargedAmountGhc) != 0) {
+            log.error("[ORDER] Top-up amount mismatch; refusing wallet credit: ref={} expected={} actual={}",
+                    reference, topUp.getChargeAmountGhc(), chargedAmountGhc);
+            throw new ValidationException("The confirmed payment amount does not match this wallet top-up.");
+        }
     }
 
     // ── Mapper ────────────────────────────────────────────────────────────────
