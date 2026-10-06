@@ -224,9 +224,8 @@ public class CheckerService {
      */
     @Scheduled(fixedDelay = 30_000L)
     public void reconcilePendingPaystackCheckerOrders() {
-        List<CheckerOrder> pending = checkerOrderRepository
-                .findByStatusAndPaymentMethodAndGatewayRefIsNotNull(
-                        CheckerOrder.CheckerOrderStatus.PENDING, CheckerOrder.PaymentMethod.PAYSTACK);
+        List<CheckerOrder> pending = checkerOrderRepository.findByStatusAndGatewayRefIsNotNull(
+                CheckerOrder.CheckerOrderStatus.PENDING);
         for (CheckerOrder order : pending) {
             String reference = order.getGatewayRef();
             try {

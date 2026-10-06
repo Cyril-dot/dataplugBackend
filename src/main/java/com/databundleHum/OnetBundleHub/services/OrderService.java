@@ -236,9 +236,8 @@ public class OrderService {
      */
     @Scheduled(fixedDelay = 30_000L)
     public void reconcilePendingPaystackOrders() {
-        List<Order> pending = orderRepository
-                .findByStatusAndPaymentMethodAndPaystackRefIsNotNull(
-                        Order.OrderStatus.PENDING, Order.PaymentMethod.PAYSTACK);
+        List<Order> pending = orderRepository.findByStatusAndPaystackRefIsNotNull(
+                Order.OrderStatus.PENDING);
         for (Order order : pending) {
             String reference = order.getPaystackRef();
             try {

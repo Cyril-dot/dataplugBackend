@@ -16,9 +16,8 @@ public interface CheckerOrderRepository extends JpaRepository<CheckerOrder, Long
 
     Optional<CheckerOrder> findByGatewayRef(String gatewayRef);
 
-    /** Guest Paystack checker orders awaiting a webhook or reconciliation pass. */
-    List<CheckerOrder> findByStatusAndPaymentMethodAndGatewayRefIsNotNull(
-            CheckerOrder.CheckerOrderStatus status, CheckerOrder.PaymentMethod paymentMethod);
+    /** All legacy/current checker orders with a gateway reference awaiting reconciliation. */
+    List<CheckerOrder> findByStatusAndGatewayRefIsNotNull(CheckerOrder.CheckerOrderStatus status);
 
     Page<CheckerOrder> findByUserOrderByCreatedAtDesc(User user, Pageable pageable);
 
