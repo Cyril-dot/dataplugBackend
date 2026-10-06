@@ -26,6 +26,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -211,8 +212,32 @@ public class CheckerService {
         try {
             deliverCredentials(order);
         } catch (Exception ex) {
-            log.error("[CHECKER] Order provisioned but SMS delivery failed: orderId={} ref={} error={}",
-                    order.getId(), reference, ex.getMessage(), ex);
+            log.error("[CHECKER] Order provisioned but SMS delivery failed: orderId={} error={}",
+                    order.getId(), ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * Recovers paid checker orders if Paystack's webhook never reaches us.
+     * Provider verification is performed before the existing fulfilment path,
+     * so an abandoned checkout can never be fulfilled by this job.
+     */
+    @Scheduled(fixedDelay = 30_000L)
+    public void reconcilePendingPaystackCheckerOrders() {
+        List<CheckerOrder> pending = checkerOrderRepository
+                .findByStatusAndPaymentMethodAndGatewayRefIsNotNull(
+                        CheckerOrder.CheckerOrderStatus.PENDING, CheckerOrder.PaymentMethod.PAYSTACK);
+        for (CheckerOrder order : pending) {
+            String reference = order.getGatewayRef();
+            try {
+                paystackService.verifyTransaction(reference);
+                log.info("[PAYSTACK-RECONCILE] Verified missed checker payment: orderId={} ref={}",
+                        order.getId(), reference);
+                fulfilCheckerKorapayOrder(reference);
+            } catch (Exception ex) {
+                log.debug("[PAYSTACK-RECONCILE] Checker payment not ready: orderId={} ref={} reason={}",
+                        order.getId(), reference, ex.getMessage());
+            }
         }
     }
 

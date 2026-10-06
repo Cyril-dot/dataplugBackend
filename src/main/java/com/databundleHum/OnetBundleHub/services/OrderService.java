@@ -28,6 +28,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,6 +37,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -223,6 +225,31 @@ public class OrderService {
                     order.getId(), reference, ex.getMessage());
             markOrderFailedAfterPaymentFailure(order, ex);
             refundPaidMtnRecipientRejection(order, ex);
+        }
+    }
+
+    /**
+     * Safety net for successful Paystack payments whose webhook was delayed,
+     * dropped, or configured against an old URL. Only PENDING orders with a
+     * Paystack reference are checked, and Paystack's live verification remains
+     * the sole authority before any fulfilment is attempted.
+     */
+    @Scheduled(fixedDelay = 30_000L)
+    public void reconcilePendingPaystackOrders() {
+        List<Order> pending = orderRepository
+                .findByStatusAndPaymentMethodAndPaystackRefIsNotNull(
+                        Order.OrderStatus.PENDING, Order.PaymentMethod.PAYSTACK);
+        for (Order order : pending) {
+            String reference = order.getPaystackRef();
+            try {
+                paystackService.verifyTransaction(reference);
+                log.info("[PAYSTACK-RECONCILE] Verified missed payment: orderId={} ref={}",
+                        order.getId(), reference);
+                fulfilKorapayOrder(reference);
+            } catch (Exception ex) {
+                log.debug("[PAYSTACK-RECONCILE] Not ready: orderId={} ref={} reason={}",
+                        order.getId(), reference, ex.getMessage());
+            }
         }
     }
 

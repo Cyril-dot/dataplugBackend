@@ -48,6 +48,10 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
     /** All orders in a given status — used by BigDreamsService background poller. */
     List<Order> findByStatus(Order.OrderStatus status);
 
+    /** Guest/storefront Paystack orders whose webhook may have been missed. */
+    List<Order> findByStatusAndPaymentMethodAndPaystackRefIsNotNull(
+            Order.OrderStatus status, Order.PaymentMethod paymentMethod);
+
     /** Paginated failed orders for the Super Admin order review. */
     Page<Order> findByStatus(Order.OrderStatus status, Pageable pageable);
 
