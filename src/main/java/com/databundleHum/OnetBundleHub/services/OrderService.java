@@ -388,7 +388,7 @@ public class OrderService {
             return;
         }
 
-        WalletTopUp topUp = walletTopUpRepository.findByGatewayRefForUpdate(reference)
+        WalletTopUp topUp = walletTopUpRepository.findByGatewayRef(reference)
                 .orElseThrow(() -> new UpstreamApiException(
                         "No WalletTopUp record found for ref=" + reference
                                 + " — cannot credit without a known userId"));
@@ -426,7 +426,7 @@ public class OrderService {
     public WalletResponse verifyTopUp(UUID userId, TopUpVerifyRequest request) {
         log.info("[ORDER] verifyTopUp: userId={} ref={}", userId, request.getPaystackRef());
 
-        WalletTopUp topUp = walletTopUpRepository.findByGatewayRefForUpdate(request.getPaystackRef())
+        WalletTopUp topUp = walletTopUpRepository.findByGatewayRef(request.getPaystackRef())
                 .orElseThrow(() -> new ValidationException(
                         "This payment reference is not a valid pending wallet top-up."));
         if (!userId.equals(topUp.getUserId())) {
