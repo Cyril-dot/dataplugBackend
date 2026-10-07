@@ -54,6 +54,7 @@ public class AdminController {
 
     private final AdminService adminService;
     private final com.databundleHum.OnetBundleHub.services.PaystackWithdrawalService paystackWithdrawalService;
+    private final com.databundleHum.OnetBundleHub.services.AdminNotificationService adminNotificationService;
     private final UnverifiedRecipientService unverifiedRecipientService;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -316,6 +317,33 @@ public class AdminController {
     public ResponseEntity<AdminPaystackWithdrawalResponse> finalizePaystackWithdrawal(
             @PathVariable Long id, @Valid @RequestBody AdminPaystackFinalizeRequest request) {
         return ResponseEntity.ok(paystackWithdrawalService.finalizeOtp(id, request.getOtp()));
+    }
+
+    // ── Admin notifications ──────────────────────────────────────────────────
+    @GetMapping("/notifications")
+    @Operation(summary = "List recent notifications for the signed-in admin")
+    public ResponseEntity<List<AdminNotificationResponse>> getAdminNotifications(
+            @RequestParam(defaultValue = "20") int limit) {
+        return ResponseEntity.ok(adminNotificationService.list(currentAdminId(), limit));
+    }
+
+    @GetMapping("/notifications/unread-count")
+    @Operation(summary = "Get the signed-in admin's unread notification count")
+    public ResponseEntity<Map<String, Long>> getAdminNotificationUnreadCount() {
+        return ResponseEntity.ok(Map.of("count", adminNotificationService.unreadCount(currentAdminId())));
+    }
+
+    @PostMapping("/notifications/{id}/read")
+    @Operation(summary = "Mark an admin notification as read")
+    public ResponseEntity<AdminNotificationResponse> markAdminNotificationRead(@PathVariable UUID id) {
+        return ResponseEntity.ok(adminNotificationService.markRead(currentAdminId(), id));
+    }
+
+    @PostMapping("/notifications/read-all")
+    @Operation(summary = "Mark all admin notifications as read")
+    public ResponseEntity<Void> markAllAdminNotificationsRead() {
+        adminNotificationService.markAllRead(currentAdminId());
+        return ResponseEntity.noContent().build();
     }
 
     // ── Platform Pricing ──────────────────────────────────────────────────────

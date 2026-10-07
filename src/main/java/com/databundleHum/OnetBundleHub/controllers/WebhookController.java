@@ -15,7 +15,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 @Slf4j
 @RestController
 @RequestMapping("/api/webhooks")
@@ -27,6 +28,7 @@ public class WebhookController {
     private final CheckerService checkerService;
     private final PaystackService paystackService;
     private final com.databundleHum.OnetBundleHub.services.PaystackWithdrawalService paystackWithdrawalService;
+    private final com.databundleHum.OnetBundleHub.services.AdminNotificationService adminNotificationService;
     private final CheckerOrderRepository checkerOrderRepository;
     private final WalletTopUpRepository walletTopUpRepository;
     private final OrderRepository orderRepository;
@@ -87,6 +89,11 @@ public class WebhookController {
             // Paystack immediately before changing application state. This
             // also makes webhook retries safe for delayed/failed payments.
             paystackService.verifyTransaction(reference);
+            adminNotificationService.notifyPaystackPayment(
+                    reference,
+                    amountGhc(data.path("amount").asLong(0)),
+                    data.path("currency").asText("GHS"),
+                    type);
             switch (type) {
                 case "CHECKER_ORDER" -> checkerService.fulfilCheckerKorapayOrder(reference);
                 case "WALLET_TOPUP" -> orderService.processTopUpWebhook(reference);
@@ -101,6 +108,10 @@ public class WebhookController {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
         return ResponseEntity.ok().build();
+    }
+
+    private BigDecimal amountGhc(long subunits) {
+        return BigDecimal.valueOf(subunits).divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
     }
 
     private String resolveTransactionType(String reference) {
