@@ -26,6 +26,7 @@ public class WebhookController {
     private final OrderService orderService;
     private final CheckerService checkerService;
     private final PaystackService paystackService;
+    private final com.databundleHum.OnetBundleHub.services.PaystackWithdrawalService paystackWithdrawalService;
     private final CheckerOrderRepository checkerOrderRepository;
     private final WalletTopUpRepository walletTopUpRepository;
     private final OrderRepository orderRepository;
@@ -55,6 +56,16 @@ public class WebhookController {
         String event = root.path("event").asText();
         JsonNode data = root.path("data");
         log.info("[PAYSTACK-WEBHOOK] Event={} dataFields={}", event, data.fieldNames().hasNext());
+
+        if (event.startsWith("transfer.")) {
+            String transferReference = data.path("reference").asText(null);
+            if (transferReference == null || transferReference.isBlank()) {
+                return ResponseEntity.badRequest().build();
+            }
+            paystackWithdrawalService.handleTransferEvent(
+                    event, transferReference, data.path("reason").asText("Paystack transfer event"));
+            return ResponseEntity.ok().build();
+        }
 
         // Paystack may retry all events. Only charge.success can fulfil an order.
         if (!"charge.success".equals(event)) {

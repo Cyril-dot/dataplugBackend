@@ -53,6 +53,7 @@ import java.util.List;
 public class AdminController {
 
     private final AdminService adminService;
+    private final com.databundleHum.OnetBundleHub.services.PaystackWithdrawalService paystackWithdrawalService;
     private final UnverifiedRecipientService unverifiedRecipientService;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -278,6 +279,43 @@ public class AdminController {
         PayoutResponse response = adminService.rejectPayout(adminId, payoutId, request);
         log.info("[ADMIN] Payout payoutId={} REJECTED by adminId={}", payoutId, adminId);
         return ResponseEntity.ok(response);
+    }
+
+    // ── Platform Paystack withdrawals ────────────────────────────────────────
+    @GetMapping("/paystack-withdrawals/balance")
+    @Operation(summary = "Get the live Paystack GHS balance")
+    public ResponseEntity<Map<String, Object>> getPaystackBalance() {
+        return ResponseEntity.ok(paystackWithdrawalService.getBalance());
+    }
+
+    @GetMapping("/paystack-withdrawals")
+    @Operation(summary = "List platform Paystack withdrawals")
+    public ResponseEntity<Page<AdminPaystackWithdrawalResponse>> getPaystackWithdrawals(
+            @RequestParam(required = false) PaystackWithdrawal.WithdrawalStatus status,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        return ResponseEntity.ok(paystackWithdrawalService.list(status, pageable));
+    }
+
+    @PostMapping("/paystack-withdrawals")
+    @Operation(summary = "Request a transfer from the platform Paystack balance")
+    public ResponseEntity<AdminPaystackWithdrawalResponse> requestPaystackWithdrawal(
+            @Valid @RequestBody AdminPaystackWithdrawalRequest request) {
+        return ResponseEntity.ok(paystackWithdrawalService.request(currentAdminId(), request));
+    }
+
+    @PostMapping("/paystack-withdrawals/{id}/verify")
+    @Operation(summary = "Verify a Paystack transfer by reference")
+    public ResponseEntity<AdminPaystackWithdrawalResponse> verifyPaystackWithdrawal(@PathVariable Long id) {
+        return ResponseEntity.ok(paystackWithdrawalService.verify(id));
+    }
+
+    @PostMapping("/paystack-withdrawals/{id}/finalize")
+    @Operation(summary = "Finalize a Paystack transfer that requires OTP")
+    public ResponseEntity<AdminPaystackWithdrawalResponse> finalizePaystackWithdrawal(
+            @PathVariable Long id, @Valid @RequestBody AdminPaystackFinalizeRequest request) {
+        return ResponseEntity.ok(paystackWithdrawalService.finalizeOtp(id, request.getOtp()));
     }
 
     // ── Platform Pricing ──────────────────────────────────────────────────────
