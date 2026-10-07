@@ -251,8 +251,19 @@ public class PaystackWithdrawalService {
         return AdminPaystackWithdrawalResponse.builder().id(w.getId()).reference(w.getReference())
                 .amountGhc(w.getAmountGhc()).payoutType(w.getPayoutType().name()).accountName(w.getAccountName())
                 .maskedAccountNumber(masked).bankCode(w.getBankCode()).reason(w.getReason()).status(w.getStatus().name())
-                .transferCode(w.getTransferCode()).failureReason(w.getFailureReason())
+                .transferCode(w.getTransferCode()).failureReason(displayFailureReason(w.getFailureReason()))
                 .requestedBy(w.getRequestedBy() == null ? null : w.getRequestedBy().getFullName())
                 .createdAt(w.getCreatedAt()).updatedAt(w.getUpdatedAt()).build();
+    }
+
+    private String displayFailureReason(String reason) {
+        if (reason == null || reason.isBlank()) return reason;
+        String normalized = reason.toLowerCase(Locale.ROOT);
+        if (normalized.contains("insufficient_balance")
+                || normalized.contains("balance is not enough to fulfil")
+                || normalized.contains("balance is not enough to fulfill")) {
+            return "Paystack balance is insufficient for this transfer. Top up the Paystack Balance and try again.";
+        }
+        return reason;
     }
 }
