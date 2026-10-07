@@ -63,7 +63,8 @@ public class PaystackWithdrawalService {
                 .orElseThrow(() -> new ResourceNotFoundException("Admin account not found"));
         BigDecimal amount = request.getAmountGhc().setScale(2, RoundingMode.HALF_UP);
         long pesewas = amount.multiply(BigDecimal.valueOf(100)).longValueExact();
-        String reference = "DP-WD-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
+        // Paystack references must be lowercase alphanumeric, dash or underscore.
+        String reference = "dp-wd-" + UUID.randomUUID().toString().replace("-", "");
 
         PaystackWithdrawal withdrawal = withdrawalRepository.save(PaystackWithdrawal.builder()
                 .reference(reference).amountGhc(amount).amountPesewas(pesewas)
@@ -73,6 +74,18 @@ public class PaystackWithdrawalService {
                 .requestedBy(admin).status(PaystackWithdrawal.WithdrawalStatus.PENDING).build());
 
         try {
+            Map<String, Object> balance = getBalance();
+            BigDecimal available = (BigDecimal) balance.get("balanceGhc");
+            if (!"GHS".equalsIgnoreCase(String.valueOf(balance.get("currency")))
+                    || available.compareTo(amount) < 0) {
+                String message = String.format(Locale.ROOT,
+                        "Insufficient Paystack GHS balance. Available: GHS %.2f; requested: GHS %.2f. Top up the Paystack Balance before trying again.",
+                        available, amount);
+                withdrawal.setStatus(PaystackWithdrawal.WithdrawalStatus.FAILED);
+                withdrawal.setFailureReason(message);
+                withdrawalRepository.save(withdrawal);
+                return toResponse(withdrawal);
+            }
             Map<String, Object> recipient = createRecipient(withdrawal);
             String recipientCode = String.valueOf(((Map<?, ?>) recipient.get("data")).get("recipient_code"));
             Map<String, Object> transfer = initiateTransfer(withdrawal, recipientCode);
@@ -82,12 +95,20 @@ public class PaystackWithdrawalService {
             withdrawal.setStatus(mapStatus(data == null ? null : String.valueOf(data.get("status"))));
             withdrawal.setFailureReason(null);
             withdrawalRepository.save(withdrawal);
+        } catch (UpstreamApiException ex) {
+            // A well-formed Paystack rejection is conclusive. It is safe to mark
+            // failed; only transport/5xx failures remain uncertain and pending.
+            withdrawal.setStatus(PaystackWithdrawal.WithdrawalStatus.FAILED);
+            withdrawal.setFailureReason(ex.getMessage());
+            withdrawalRepository.save(withdrawal);
         } catch (WebClientResponseException ex) {
-            withdrawal.setFailureReason("Paystack rejected the transfer: " + safeMessage(ex));
             // Do not retry automatically: a timeout/5xx may mean Paystack accepted it.
             withdrawal.setStatus(ex.getStatusCode().is4xxClientError()
                     ? PaystackWithdrawal.WithdrawalStatus.FAILED
                     : PaystackWithdrawal.WithdrawalStatus.PENDING);
+            withdrawal.setFailureReason(ex.getStatusCode().is4xxClientError()
+                    ? "Paystack rejected the transfer: " + safeMessage(ex)
+                    : "Transfer outcome could not be confirmed; verify this reference before retrying.");
             withdrawalRepository.save(withdrawal);
             if (ex.getStatusCode().is5xxServerError()) {
                 log.error("[PAYSTACK-TRANSFER] Ambiguous response ref={}; verify before retrying", reference, ex);
@@ -161,7 +182,7 @@ public class PaystackWithdrawalService {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("type", w.getPayoutType() == PaystackWithdrawal.PayoutType.MOBILE_MONEY ? "mobile_money" : "ghipss");
         body.put("name", w.getAccountName()); body.put("account_number", w.getAccountNumber());
-        body.put("bank_code", w.getBankCode()); body.put("currency", "GHS");
+        body.put("bank_code", w.getBankCode().toUpperCase(Locale.ROOT)); body.put("currency", "GHS");
         return post("/transferrecipient", body);
     }
 
@@ -177,7 +198,7 @@ public class PaystackWithdrawalService {
         Map<String, Object> response = paystackWebClient.post().uri(path).bodyValue(body).retrieve()
                 .bodyToMono(Map.class).block();
         if (response == null || !Boolean.TRUE.equals(response.get("status"))) {
-            throw new UpstreamApiException("Paystack transfer request failed: " + (response == null ? "empty response" : response.get("message")));
+            throw new UpstreamApiException("Paystack rejected the transfer: " + formatProviderError(response));
         }
         return response;
     }
@@ -210,6 +231,18 @@ public class PaystackWithdrawalService {
     private String safeMessage(WebClientResponseException ex) {
         String message = ex.getResponseBodyAsString();
         return message == null || message.isBlank() ? ex.getStatusText() : message.substring(0, Math.min(500, message.length()));
+    }
+
+    private String formatProviderError(Map<String, Object> response) {
+        if (response == null) return "empty response";
+        String message = String.valueOf(response.getOrDefault("message", "unknown error"));
+        Object meta = response.get("meta");
+        if (meta instanceof Map<?, ?> metaMap && metaMap.get("nextStep") != null) {
+            message += " (" + metaMap.get("nextStep") + ")";
+        }
+        Object code = response.get("code");
+        if (code != null) message += " [" + code + "]";
+        return message;
     }
 
     private AdminPaystackWithdrawalResponse toResponse(PaystackWithdrawal w) {
