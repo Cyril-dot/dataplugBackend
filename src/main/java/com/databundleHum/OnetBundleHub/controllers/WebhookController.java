@@ -97,7 +97,7 @@ public class WebhookController {
             switch (type) {
                 case "CHECKER_ORDER" -> checkerService.fulfilCheckerKorapayOrder(reference);
                 case "WALLET_TOPUP" -> orderService.processTopUpWebhook(reference);
-                case "GUEST_ORDER" -> orderService.fulfilKorapayOrder(reference);
+                case "GUEST_ORDER", "USER_ORDER" -> orderService.fulfilKorapayOrder(reference);
                 default -> log.warn("[PAYSTACK-WEBHOOK] Reference matched no known order: {}", reference);
             }
         } catch (Exception ex) {
@@ -117,8 +117,9 @@ public class WebhookController {
     private String resolveTransactionType(String reference) {
         if (checkerOrderRepository.findByGatewayRef(reference).isPresent()) return "CHECKER_ORDER";
         if (walletTopUpRepository.findByGatewayRef(reference).isPresent()) return "WALLET_TOPUP";
-        if (orderRepository.findByPaystackRef(reference).isPresent()) return "GUEST_ORDER";
-        return "UNKNOWN";
+        return orderRepository.findByPaystackRef(reference)
+                .map(order -> order.getUser() == null ? "GUEST_ORDER" : "USER_ORDER")
+                .orElse("UNKNOWN");
     }
 
     private JsonNode parsePayload(byte[] rawBody) {

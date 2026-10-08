@@ -106,6 +106,9 @@ public class OrderResponse {
      */
     private String     userEmail;
 
+    /** Full name on the account that placed the order. Null for guest orders. */
+    private String     userFullName;
+
     /**
      * Account phone number of the buyer (their User.phone) — distinct from
      * `phoneNumber` above, which is the destination number the bundle is

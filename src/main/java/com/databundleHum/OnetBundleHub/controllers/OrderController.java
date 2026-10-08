@@ -67,6 +67,19 @@ public class OrderController {
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
+    @PostMapping("/paystack")
+    @PreAuthorize("isAuthenticated()")
+    @SecurityRequirement(name = "bearerAuth")
+    @Operation(summary = "Initiate an authenticated Paystack data order")
+    public ResponseEntity<InitiateOrderResponse> initiateAuthenticatedPaystackOrder(
+            @Valid @RequestBody InitiateGuestOrderRequest request) {
+        UUID userId = currentUserId();
+        log.info("[ORDER] Authenticated Paystack order: userId={} phone={} network={} gb={}",
+                userId, request.getPhoneNumber(), request.getNetwork(), request.getCapacityGb());
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(orderService.initiateUserPaystackOrder(userId, request));
+    }
+
     @GetMapping("/status")
     @Operation(summary = "Poll guest order status by Paystack reference")
     @ApiResponses({

@@ -205,6 +205,60 @@ public class OrderService {
                 .build();
     }
 
+    /**
+     * Initiates a Paystack order for a signed-in customer. Unlike guest checkout,
+     * this stores the owning User on the order so it appears in order history.
+     */
+    @Transactional
+    public InitiateOrderResponse initiateUserPaystackOrder(UUID userId, InitiateGuestOrderRequest request) {
+        User user = findUserOrThrow(userId);
+        PlatformSettings settings = getActiveSettings(request.getNetwork(), request.getCapacityGb());
+        BigDecimal basePriceGhc = settings.getPublicPriceGhc();
+        BigDecimal chargeAmountGhc = addProcessingCharge(basePriceGhc);
+        String reference = REFERENCE_PREFIX + "-" + paystackService.generateReference();
+
+        Map<String, Object> metadata = new HashMap<>();
+        metadata.put("type", "USER_ORDER");
+        metadata.put("userId", userId.toString());
+        metadata.put("phone", request.getPhoneNumber());
+        metadata.put("network", request.getNetwork().name());
+        metadata.put("capacityGb", request.getCapacityGb().toString());
+        metadata.put("baseAmountGhc", basePriceGhc.toPlainString());
+        metadata.put("customerName", user.getFullName());
+
+        Map<String, Object> paystackData = paystackService.initiateTransaction(
+                user.getEmail(), user.getFullName(), chargeAmountGhc, reference,
+                buildOrdersRedirectUrl(), metadata);
+
+        Order order = orderRepository.save(Order.builder()
+                .user(user)
+                .phoneNumber(request.getPhoneNumber())
+                .network(request.getNetwork())
+                .capacityGb(request.getCapacityGb())
+                .costPriceGhc(basePriceGhc)
+                .sellingPriceGhc(basePriceGhc)
+                .paymentMethod(Order.PaymentMethod.PAYSTACK)
+                .paystackRef(reference)
+                .status(Order.OrderStatus.PENDING)
+                .guest(false)
+                .orderedByRole(Order.OrderedByRole.USER)
+                .storefrontOrder(false)
+                .build());
+
+        log.info("[ORDER] Authenticated Paystack order initiated: orderId={} userId={} ref={} email={} phone={}",
+                order.getId(), userId, reference, user.getEmail(), request.getPhoneNumber());
+        return InitiateOrderResponse.builder()
+                .paystackReference(reference)
+                .authorizationUrl((String) paystackData.get("checkout_url"))
+                .amountGhc(chargeAmountGhc)
+                .amountPesewas(chargeAmountGhc.multiply(BigDecimal.valueOf(100)).longValueExact())
+                .email(user.getEmail())
+                .phoneNumber(request.getPhoneNumber())
+                .network(request.getNetwork().name())
+                .capacityGb(request.getCapacityGb())
+                .build();
+    }
+
     // ── Guest checkout: step 2 — webhook fulfilment ───────────────────────────
 
     public void fulfilKorapayOrder(String reference) {
@@ -813,6 +867,10 @@ public class OrderService {
         return frontendUrlResolver.resolveBaseUrl() + "/dashboard";
     }
 
+    private String buildOrdersRedirectUrl() {
+        return frontendUrlResolver.resolveBaseUrl() + "/orders";
+    }
+
     private void rejectIfDuplicate(UUID userId, String phoneNumber,
                                    PlatformSettings.Network network,
                                    BigDecimal capacityGb, String role) {
@@ -897,6 +955,9 @@ public class OrderService {
                 .failureReason(DataPackBranding.forDisplay(o.getFailureReason()))
                 .guest(o.isGuest())
                 .storefrontOrder(o.isStorefrontOrder())
+                .userFullName(o.getUser() == null ? null : o.getUser().getFullName())
+                .userEmail(o.getUser() == null ? null : o.getUser().getEmail())
+                .userPhone(o.getUser() == null ? null : o.getUser().getPhone())
                 .createdAt(o.getCreatedAt())
                 .updatedAt(o.getUpdatedAt())
                 .build();

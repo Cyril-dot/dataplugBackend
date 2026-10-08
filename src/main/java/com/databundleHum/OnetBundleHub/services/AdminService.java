@@ -702,6 +702,7 @@ public class AdminService {
                 .guest(o.isGuest())
                 .storefrontOrder(o.isStorefrontOrder())
                 .resellerStoreName(resellerStoreName)
+                .userFullName(orderUser == null ? null : orderUser.getFullName())
                 .userEmail(userEmail)
                 .userPhone(userPhone)
                 .createdAt(o.getCreatedAt())
