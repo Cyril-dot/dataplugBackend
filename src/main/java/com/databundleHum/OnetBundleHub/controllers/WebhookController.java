@@ -14,6 +14,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -42,6 +43,7 @@ public class WebhookController {
      */
     @PostMapping({"/paystack", "/korapay"})
     @Operation(summary = "Paystack webhook — charge.success handler")
+    @Transactional
     public ResponseEntity<Void> handlePaystack(
             @RequestHeader(value = "x-paystack-signature", required = false) String signature,
             @RequestBody byte[] rawBody) {
@@ -89,17 +91,19 @@ public class WebhookController {
             // Paystack immediately before changing application state. This
             // also makes webhook retries safe for delayed/failed payments.
             paystackService.verifyTransaction(reference);
-            adminNotificationService.notifyPaystackPayment(
-                    reference,
-                    amountGhc(data.path("amount").asLong(0)),
-                    data.path("currency").asText("GHS"),
-                    type);
             switch (type) {
                 case "CHECKER_ORDER" -> checkerService.fulfilCheckerKorapayOrder(reference);
                 case "WALLET_TOPUP" -> orderService.processTopUpWebhook(reference);
                 case "GUEST_ORDER", "USER_ORDER" -> orderService.fulfilKorapayOrder(reference);
                 default -> log.warn("[PAYSTACK-WEBHOOK] Reference matched no known order: {}", reference);
             }
+            // Notified only after fulfilment was attempted — an admin alert
+            // must never be able to throw/500 and skip the money movement above.
+            adminNotificationService.notifyPaystackPayment(
+                    reference,
+                    amountGhc(data.path("amount").asLong(0)),
+                    data.path("currency").asText("GHS"),
+                    type);
         } catch (Exception ex) {
             // A non-2xx makes Paystack retry the signed webhook, which is useful
             // for transient provider/database failures and preserves idempotency.

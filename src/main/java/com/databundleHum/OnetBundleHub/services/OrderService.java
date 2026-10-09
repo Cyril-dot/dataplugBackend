@@ -294,6 +294,13 @@ public class OrderService {
                 Order.OrderStatus.PENDING);
         for (Order order : pending) {
             String reference = order.getPaystackRef();
+            // Legacy refs from the old "databaygh" integration live under a
+            // different Paystack secret key — Paystack 400s them on every
+            // verify, so skip them instead of burning API calls (and risking
+            // rate limits for legitimate verifications) on every cycle.
+            if (reference != null && reference.startsWith("databaygh-shop-")) {
+                continue;
+            }
             try {
                 paystackService.verifyTransaction(reference);
                 log.info("[PAYSTACK-RECONCILE] Verified missed payment: orderId={} ref={}",
