@@ -314,6 +314,53 @@ public class OrderService {
     }
 
     /**
+     * Automatic safety net for wallet top-ups: credits any PENDING top-up
+     * whose Paystack transaction is confirmed successful — even if the
+     * webhook never arrived (provider outage, missed retry window) and the
+     * user closed the tab. This also heals top-ups stuck PENDING by the
+     * pre-fix webhook 500s, with no manual admin action needed.
+     *
+     * Runs every 60 seconds. Checkouts Paystack confirms as abandoned/failed
+     * and older than 24h are retired to FAILED so we stop polling for
+     * transactions that can never complete (Paystack checkouts expire).
+     */
+    @Scheduled(fixedDelay = 60_000L)
+    @Transactional
+    public void reconcilePendingWalletTopUps() {
+        List<WalletTopUp> pending = walletTopUpRepository.findByStatus(WalletTopUp.Status.PENDING);
+        for (WalletTopUp topUp : pending) {
+            String reference = topUp.getGatewayRef();
+            // Legacy refs from the old "databaygh" integration live under a
+            // different Paystack secret key — Paystack 400s them on every
+            // verify, so skip them instead of burning API calls on every cycle.
+            if (reference != null && reference.startsWith("databaygh-shop-")) {
+                continue;
+            }
+            try {
+                processTopUpWebhook(reference);
+                log.info("[PAYSTACK-RECONCILE] Verified missed top-up payment: userId={} ref={}",
+                        topUp.getUserId(), reference);
+            } catch (UpstreamApiException ex) {
+                String message = ex.getMessage() == null ? "" : ex.getMessage();
+                boolean terminal = message.contains("Status: abandoned")
+                        || message.contains("Status: failed");
+                if (terminal && topUp.getCreatedAt().isBefore(LocalDateTime.now().minusHours(24))) {
+                    topUp.setStatus(WalletTopUp.Status.FAILED);
+                    walletTopUpRepository.save(topUp);
+                    log.info("[PAYSTACK-RECONCILE] Retired unpaid top-up: userId={} ref={} reason={}",
+                            topUp.getUserId(), reference, message);
+                } else {
+                    log.debug("[PAYSTACK-RECONCILE] Top-up not ready: userId={} ref={} reason={}",
+                            topUp.getUserId(), reference, message);
+                }
+            } catch (Exception ex) {
+                log.debug("[PAYSTACK-RECONCILE] Top-up reconcile error: userId={} ref={} reason={}",
+                        topUp.getUserId(), reference, ex.getMessage());
+            }
+        }
+    }
+
+    /**
      * BigDreams is the authority for MTN eligibility. If it rejects a paid
      * Korapay order for beneficiary approval, request a full gateway refund.
      * The merchant refund reference is deterministic so duplicate webhooks
