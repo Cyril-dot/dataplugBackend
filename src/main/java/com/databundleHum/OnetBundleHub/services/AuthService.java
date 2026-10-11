@@ -1,10 +1,12 @@
 package com.databundleHum.OnetBundleHub.services;
 
 import com.databundleHum.OnetBundleHub.dtos.*;
+import com.databundleHum.OnetBundleHub.entity.PasswordResetToken;
 import com.databundleHum.OnetBundleHub.entity.RefreshToken;
 import com.databundleHum.OnetBundleHub.entity.User;
 import com.databundleHum.OnetBundleHub.entity.User.Role;
 import com.databundleHum.OnetBundleHub.repos.RefreshTokenRepository;
+import com.databundleHum.OnetBundleHub.repos.PasswordResetTokenRepository;
 import com.databundleHum.OnetBundleHub.repos.UserRepository;
 import com.databundleHum.OnetBundleHub.security.*;
 import lombok.RequiredArgsConstructor;
@@ -16,6 +18,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.security.SecureRandom;
 import java.util.UUID;
 
 /**
@@ -42,8 +45,11 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class AuthService {
 
+    private static final SecureRandom RESET_CODE_RANDOM = new SecureRandom();
+
     private final UserRepository         userRepository;
     private final RefreshTokenRepository refreshTokenRepository;
+    private final PasswordResetTokenRepository passwordResetTokenRepository;
     private final JwtUtil                jwtUtil;
     private final PasswordEncoder        passwordEncoder;
     private final AuthenticationManager  authenticationManager;
@@ -192,6 +198,54 @@ public class AuthService {
     public void logout(UUID userId) {
         refreshTokenRepository.revokeAllByUserId(userId);
         log.info("[AUTH] User logged out: userId={}", userId);
+    }
+
+    // ── Forgot password (email OTP) ───────────────────────────────────────────
+
+    /** Starts recovery without revealing whether an email is registered. */
+    @Transactional
+    public void forgotPassword(ForgotPasswordRequest request) {
+        String email = request.getEmail().trim().toLowerCase();
+        userRepository.findByEmail(email).ifPresent(user -> {
+            passwordResetTokenRepository.invalidateAllForUser(email);
+            String otp = String.format("%06d", RESET_CODE_RANDOM.nextInt(1_000_000));
+            passwordResetTokenRepository.save(PasswordResetToken.builder()
+                    .otp(otp)
+                    .user(user)
+                    .expiresAt(Instant.now().plusSeconds(600))
+                    .used(false)
+                    .createdAt(Instant.now())
+                    .build());
+            notificationService.sendPasswordResetOtp(user.getEmail(), user.getFullName(), otp);
+            log.info("[AUTH] Password reset code generated for userId={}", user.getId());
+        });
+    }
+
+    @Transactional
+    public void completePasswordReset(CompletePasswordResetRequest request) {
+        if (!request.getNewPassword().equals(request.getConfirmPassword())) {
+            throw new ValidationException("Passwords do not match.");
+        }
+
+        String email = request.getEmail().trim().toLowerCase();
+        PasswordResetToken token = passwordResetTokenRepository
+                .findByOtpAndUsedFalse(request.getOtp())
+                .filter(candidate -> candidate.getExpiresAt().isAfter(Instant.now()))
+                .filter(candidate -> candidate.getUser().getEmail().equalsIgnoreCase(email))
+                .orElseThrow(() -> new ValidationException("That reset code is invalid or expired."));
+
+        User user = token.getUser();
+        if (passwordEncoder.matches(request.getNewPassword(), user.getPasswordHash())) {
+            throw new ValidationException("New password must be different from your current password.");
+        }
+
+        user.setPasswordHash(passwordEncoder.encode(request.getNewPassword()));
+        userRepository.save(user);
+        token.setUsed(true);
+        passwordResetTokenRepository.save(token);
+        refreshTokenRepository.revokeAllByUserId(user.getId());
+        notificationService.sendPasswordChangedAlert(user.getEmail(), user.getFullName());
+        log.info("[AUTH] Password reset completed for userId={}", user.getId());
     }
 
     // ── Reset password (unauthenticated — email + previous password) ───────────

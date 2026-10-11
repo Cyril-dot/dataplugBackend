@@ -70,6 +70,16 @@ public class NotificationService {
                         + "If this wasn't you, please contact support immediately.\n\nTeam DBH");
     }
 
+    /** Sends the short-lived one-time code used to recover an account. */
+    @Async
+    public void sendPasswordResetOtp(String email, String fullName, String otp) {
+        log.info("Sending password reset code: to={}", email);
+        sendEmail(email, fullName, "Your DataPack password reset code",
+                "Hi " + fullName + ",\n\nYour DataPack password reset code is: " + otp
+                        + "\n\nThis code expires in 10 minutes and can only be used once."
+                        + " If you did not request this, you can ignore this email.\n\nTeam DBH");
+    }
+
     // ── Order alerts ──────────────────────────────────────────────────────────
 
     /**

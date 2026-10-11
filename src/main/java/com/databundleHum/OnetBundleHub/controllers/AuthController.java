@@ -115,6 +115,28 @@ public class AuthController {
         return ResponseEntity.ok(response);
     }
 
+    @PostMapping("/forgot-password")
+    @Operation(summary = "Send a one-time password reset code by email")
+    @ApiResponses({
+            @ApiResponse(responseCode = "202", description = "If the email is registered, a reset code was sent")
+    })
+    public ResponseEntity<Void> forgotPassword(@Valid @RequestBody ForgotPasswordRequest request) {
+        authService.forgotPassword(request);
+        return ResponseEntity.accepted().build();
+    }
+
+    @PostMapping("/reset-password/confirm")
+    @Operation(summary = "Complete password reset using the emailed one-time code")
+    @ApiResponses({
+            @ApiResponse(responseCode = "204", description = "Password reset successfully"),
+            @ApiResponse(responseCode = "400", description = "Invalid, expired, or already-used reset code")
+    })
+    public ResponseEntity<Void> completePasswordReset(
+            @Valid @RequestBody CompletePasswordResetRequest request) {
+        authService.completePasswordReset(request);
+        return ResponseEntity.noContent().build();
+    }
+
     @PostMapping("/reset-password")
     @Operation(summary = "Reset password using email + current password (unauthenticated flow)")
     @ApiResponses({
