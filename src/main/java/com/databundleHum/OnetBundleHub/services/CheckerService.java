@@ -22,6 +22,7 @@ import com.databundleHum.OnetBundleHub.security.UpstreamApiException;
 import com.databundleHum.OnetBundleHub.util.DataPackBranding;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -98,6 +99,9 @@ public class CheckerService {
     private final NotificationService        notificationService;
     private final com.databundleHum.OnetBundleHub.config.AppConfig appConfig;
     private final com.databundleHum.OnetBundleHub.util.FrontendUrlResolver frontendUrlResolver;
+    // Lazy provider, not a direct field: ResellerStorefrontService already
+    // depends on CheckerService, so a direct injection would be a cycle.
+    private final ObjectProvider<ResellerStorefrontService> resellerStorefrontServiceProvider;
 
     // ── Guest checkout: step 1 — initiate ────────────────────────────────────
 
@@ -215,6 +219,21 @@ public class CheckerService {
             log.error("[CHECKER] Order provisioned but SMS delivery failed: orderId={} error={}",
                     order.getId(), ex.getMessage(), ex);
         }
+
+        // Storefront checker sales must also post the reseller's stats.
+        // ResellerStorefrontService.fulfilStorefrontCheckerKorapayOrder does
+        // this, but nothing ever routed webhook/reconciler traffic to it —
+        // both call this method — so storefront checker revenue never
+        // reached the reseller's dashboard. Stats are bookkeeping: a
+        // failure here must not fail an otherwise-completed fulfilment.
+        if (order.isStorefrontOrder()) {
+            try {
+                resellerStorefrontServiceProvider.getObject().updateResellerCheckerStats(order);
+            } catch (Exception ex) {
+                log.error("[CHECKER] Reseller stats update failed for storefront checker order: orderId={} error={}",
+                        order.getId(), ex.getMessage(), ex);
+            }
+        }
     }
 
     /**
@@ -240,6 +259,24 @@ public class CheckerService {
                 log.info("[PAYSTACK-RECONCILE] Verified missed checker payment: orderId={} ref={}",
                         order.getId(), reference);
                 fulfilCheckerKorapayOrder(reference);
+            } catch (UpstreamApiException ex) {
+                // Same retirement as bundle orders and wallet top-ups: a
+                // checkout Paystack confirms as abandoned/failed can never
+                // complete, so retire it to FAILED after 24h instead of
+                // leaving an unpaid checkout listed as PENDING forever.
+                String message = ex.getMessage() == null ? "" : ex.getMessage();
+                boolean terminal = message.contains("Status: abandoned")
+                        || message.contains("Status: failed");
+                if (terminal && order.getCreatedAt().isBefore(LocalDateTime.now().minusHours(24))) {
+                    order.setStatus(CheckerOrder.CheckerOrderStatus.FAILED);
+                    order.setFailureReason("Payment not completed — the checkout was abandoned.");
+                    checkerOrderRepository.save(order);
+                    log.info("[PAYSTACK-RECONCILE] Retired unpaid checker order: orderId={} ref={} reason={}",
+                            order.getId(), reference, message);
+                } else {
+                    log.debug("[PAYSTACK-RECONCILE] Checker payment not ready: orderId={} ref={} reason={}",
+                            order.getId(), reference, message);
+                }
             } catch (Exception ex) {
                 log.debug("[PAYSTACK-RECONCILE] Checker payment not ready: orderId={} ref={} reason={}",
                         order.getId(), reference, ex.getMessage());
