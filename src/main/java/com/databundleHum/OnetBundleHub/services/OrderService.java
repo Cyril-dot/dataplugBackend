@@ -25,6 +25,7 @@ import com.databundleHum.OnetBundleHub.entity.WalletTopUp;
 import com.databundleHum.OnetBundleHub.security.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -118,6 +119,9 @@ public class OrderService {
     private final AppConfig                   appConfig;
     private final FrontendUrlResolver          frontendUrlResolver;
     private final PricingService pricingService;
+    // Lazy provider, not a direct field: ResellerStorefrontService already
+    // depends on OrderService, so a direct injection would be a cycle.
+    private final ObjectProvider<ResellerStorefrontService> resellerStorefrontServiceProvider;
 
     public RecipientVerificationResponse checkRecipientVerification(RecipientVerificationRequest request) {
         return unverifiedRecipientService.check(request.getPhoneNumber(), request.getNetwork());
@@ -269,6 +273,24 @@ public class OrderService {
             return;
         }
 
+        // Storefront orders must run the storefront fulfilment — it is the
+        // only path that provisions AND posts the reseller's revenue/profit
+        // stats. Both the webhook and the reconciler below call this method,
+        // so routing here covers both; previously every storefront Paystack
+        // sale was fulfilled generically and updateResellerStats() never
+        // ran, so resellers were paid-in-full invisibly. The processed-ref
+        // is recorded first so webhook retries stay idempotent (the
+        // storefront path does not record one itself).
+        Order existing = orderRepository.findByPaystackRef(reference).orElse(null);
+        if (existing != null && existing.isStorefrontOrder()) {
+            processedRefRepository.save(ProcessedRef.builder()
+                    .reference(reference)
+                    .eventType("STOREFRONT_ORDER")
+                    .build());
+            resellerStorefrontServiceProvider.getObject().fulfilStorefrontKorapayOrder(reference);
+            return;
+        }
+
         Order order = markKorapayOrderVerified(reference);
 
         try {
@@ -306,6 +328,27 @@ public class OrderService {
                 log.info("[PAYSTACK-RECONCILE] Verified missed payment: orderId={} ref={}",
                         order.getId(), reference);
                 fulfilKorapayOrder(reference);
+            } catch (UpstreamApiException ex) {
+                // Mirror the wallet top-up retirement below: a checkout
+                // Paystack confirms as abandoned/failed can never complete
+                // (Paystack checkouts expire), so once it is older than 24h
+                // retire the order to FAILED instead of leaving an unpaid
+                // checkout sitting in the customer's order history as
+                // PENDING forever — which is exactly what made unpaid
+                // checkouts look like placed orders.
+                String message = ex.getMessage() == null ? "" : ex.getMessage();
+                boolean terminal = message.contains("Status: abandoned")
+                        || message.contains("Status: failed");
+                if (terminal && order.getCreatedAt().isBefore(LocalDateTime.now().minusHours(24))) {
+                    order.setStatus(Order.OrderStatus.FAILED);
+                    order.setFailureReason("Payment not completed — the checkout was abandoned.");
+                    orderRepository.save(order);
+                    log.info("[PAYSTACK-RECONCILE] Retired unpaid order: orderId={} ref={} reason={}",
+                            order.getId(), reference, message);
+                } else {
+                    log.debug("[PAYSTACK-RECONCILE] Not ready: orderId={} ref={} reason={}",
+                            order.getId(), reference, message);
+                }
             } catch (Exception ex) {
                 log.debug("[PAYSTACK-RECONCILE] Not ready: orderId={} ref={} reason={}",
                         order.getId(), reference, ex.getMessage());
