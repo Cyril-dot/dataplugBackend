@@ -666,10 +666,23 @@ public class ResellerStorefrontService {
                 providerNetwork, order.getPhoneNumber(), order.getCapacityGb().intValueExact(), providerOrderId);
         order.setDbhPurchaseId(result.transactionId());
         order.setDbhReference(result.reference() != null ? result.reference() : result.orderId());
-        order.setStatus(Order.OrderStatus.PENDING);
+        // Map the provider's own verdict, mirroring OrderService's mapping —
+        // this used to hard-code PENDING, so a storefront order Big Dreams
+        // had already delivered stayed "processing" in every list forever.
+        order.setStatus(toOrderStatus(result.status()));
         orderRepository.save(order);
         log.info("[STOREFRONT] Big Dreams accepted orderId={} providerOrderId={} reference={} status={}",
                 order.getId(), result.orderId(), result.reference(), result.status());
+    }
+
+    /** Same provider-status mapping OrderService applies to its orders. */
+    private Order.OrderStatus toOrderStatus(String status) {
+        String normalized = status == null ? "" : status.trim().toLowerCase()
+                .replace('-', '_').replace(' ', '_');
+        return normalized.equals("completed") || normalized.equals("complete")
+                || normalized.equals("delivered") || normalized.equals("success")
+                || normalized.equals("successful") || normalized.equals("done")
+                ? Order.OrderStatus.COMPLETED : Order.OrderStatus.PENDING;
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
