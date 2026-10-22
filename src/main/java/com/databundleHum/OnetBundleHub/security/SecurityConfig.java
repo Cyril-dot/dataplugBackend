@@ -170,6 +170,15 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET,  "/api/v1/storefront/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/storefront/*/orders/guest").permitAll()
 
+                        // ── Public storefront CHECKER guest checkout ─────────────
+                        // StorefrontCheckerController lives under /api/v1/store/**
+                        // (not /storefront/**) and no permitAll rule ever covered
+                        // it — every guest checker purchase on a reseller's store
+                        // fell through to anyRequest().authenticated() and got a
+                        // 401 before payment could even start. The wallet variant
+                        // (POST .../checker-order/wallet) stays authenticated.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/store/*/checker-order/guest").permitAll()
+
                         // ── Affiliate & reseller referral redirects ──────────────────
                         .requestMatchers(HttpMethod.GET, "/a/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/ref/**").permitAll()
