@@ -1,5 +1,6 @@
 package com.databundleHum.OnetBundleHub.services;
 
+import com.databundleHum.OnetBundleHub.config.AppConfig;
 import com.databundleHum.OnetBundleHub.security.UpstreamApiException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -64,6 +65,7 @@ public class BigDreamsDataService {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final OrderRepository orderRepository;
     private final WalletService walletService;
+    private final AppConfig appConfig;
 
     // ══════════════════════════════════════════════════════════════════════
     // Data bundles
@@ -440,6 +442,10 @@ public class BigDreamsDataService {
     /** Poll accepted Big Dreams orders at the provider-documented 30–60 second cadence. */
     @Scheduled(fixedDelay = 60_000L)
     public void reconcilePendingOrders() {
+        // EmmaDataKing is the active provider — its reconciler owns pending
+        // orders now. This poller revives automatically if DATA_PROVIDER is
+        // flipped back to bigdreams.
+        if (appConfig.isEmmaProvider()) return;
         List<Order> pending = orderRepository.findByStatus(Order.OrderStatus.PENDING).stream()
                 .filter(o -> o.getDbhReference() != null && !o.getDbhReference().isBlank())
                 .toList();
