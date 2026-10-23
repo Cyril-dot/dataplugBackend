@@ -99,8 +99,8 @@ public class ResellerServiceImpl implements ResellerService {
         User user = findUserOrThrow(userId);
         ResellerProfile profile = findProfileOrThrow(user);
 
-        long totalOrders = orderRepository.countByUserAndOrderedByRole(
-                user, Order.OrderedByRole.RESELLER);
+        long totalOrders = orderRepository.countResellerOrders(
+                profile, user, Order.OrderedByRole.RESELLER);
 
         return ResellerDashboardResponse.builder()
                 .profileId(profile.getId())
@@ -286,9 +286,13 @@ public class ResellerServiceImpl implements ResellerService {
     @Transactional(readOnly = true)
     public Page<ResellerOrderResponse> getOrders(UUID userId, Pageable pageable) {
         User user = findUserOrThrow(userId);
+        // Storefront sales (by profile) + the reseller's own wholesale
+        // orders — previously only wholesale orders were returned, so
+        // customers' storefront purchases (incl. PENDING checkouts) never
+        // showed in the reseller's Order History.
+        ResellerProfile profile = resellerProfileRepository.findByUser(user).orElse(null);
         return orderRepository
-                .findByUserAndOrderedByRoleOrderByCreatedAtDesc(
-                        user, Order.OrderedByRole.RESELLER, pageable)
+                .findResellerOrders(profile, user, Order.OrderedByRole.RESELLER, pageable)
                 .map(this::toOrderResponse);
     }
 
