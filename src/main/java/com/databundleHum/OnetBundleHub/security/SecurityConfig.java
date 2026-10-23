@@ -153,6 +153,7 @@ public class SecurityConfig {
 
                         // ── Public order status + guest checkout ─────────────────────
                         .requestMatchers(HttpMethod.GET,  "/api/v1/orders/status").permitAll()
+                        .requestMatchers(HttpMethod.GET,  "/api/v1/version").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/orders/guest").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/orders/recipient-verification/check").permitAll()
 
