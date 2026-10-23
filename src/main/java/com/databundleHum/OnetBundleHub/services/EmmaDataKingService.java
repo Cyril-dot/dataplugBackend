@@ -55,7 +55,7 @@ import java.util.Map;
 public class EmmaDataKingService {
 
     @Qualifier("emmaDataKingWebClient")
-    private final WebClient emmaWebClient;
+    private final WebClient emmaDataKingWebClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final OrderRepository orderRepository;
     private final WalletService walletService;
@@ -286,7 +286,7 @@ public class EmmaDataKingService {
 
     private JsonNode postForData(String path, Map<String, Object> body, String actionForLogging) {
         try {
-            String rawBody = emmaWebClient.post()
+            String rawBody = emmaDataKingWebClient.post()
                     .uri(path)
                     .bodyValue(body)
                     .retrieve()
@@ -307,7 +307,7 @@ public class EmmaDataKingService {
 
     private JsonNode getForData(String path, String actionForLogging) {
         try {
-            String rawBody = emmaWebClient.get()
+            String rawBody = emmaDataKingWebClient.get()
                     .uri(path)
                     .retrieve()
                     .bodyToMono(String.class)
