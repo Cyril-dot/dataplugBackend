@@ -281,6 +281,43 @@ public class EmmaDataKingService {
     }
 
     // ══════════════════════════════════════════════════════════════════════
+    // Webhook events (invoked by EmmaWebhookController after HMAC verification)
+    // ══════════════════════════════════════════════════════════════════════
+
+    /** order.completed — flip a still-pending order to COMPLETED. Idempotent. */
+    @Transactional
+    public void handleWebhookDelivered(String reference) {
+        for (Order order : ordersByReference(reference)) {
+            if (order.getStatus() != Order.OrderStatus.PENDING) {
+                log.info("[EMMA] Webhook delivered ignored: order {} already {}",
+                        order.getId(), order.getStatus());
+                continue;
+            }
+            markProviderStatus(order, Order.OrderStatus.COMPLETED);
+            log.info("[EMMA] Webhook: order completed localOrderId={} ref={}", order.getId(), reference);
+        }
+    }
+
+    /** order.failed / order.refunded — fail + refund via the shared failure path. Idempotent. */
+    @Transactional
+    public void handleWebhookFailed(String reference, String failureReason) {
+        for (Order order : ordersByReference(reference)) {
+            markProviderFailure(order, failureReason);
+            log.warn("[EMMA] Webhook: order failed localOrderId={} ref={} reason={}",
+                    order.getId(), reference, failureReason);
+        }
+    }
+
+    private List<Order> ordersByReference(String reference) {
+        if (reference == null || reference.isBlank()) return List.of();
+        List<Order> orders = orderRepository.findByDbhReference(reference);
+        if (orders.isEmpty()) {
+            log.warn("[EMMA] Webhook for unknown reference: {}", reference);
+        }
+        return orders;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
     // Shared request/response plumbing (mirrors BigDreamsDataService)
     // ══════════════════════════════════════════════════════════════════════
 
