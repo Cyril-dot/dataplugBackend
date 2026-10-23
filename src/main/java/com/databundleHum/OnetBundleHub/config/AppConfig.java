@@ -74,6 +74,14 @@ public class AppConfig {
     private String emmaDataKingBaseUrl;
 
     /**
+     * Webhook signing secret issued by the EmmaDataKing developer portal
+     * (starts with whsec_). Supply via environment variable
+     * EMMADATAKING_WEBHOOK_SECRET in production.
+     */
+    @Value("${emmadataking.webhook-secret:}")
+    private String emmaWebhookSecret;
+
+    /**
      * Active data-bundle provider: "emma" (default since the Oct 2026
      * cutover) or "bigdreams" (rollback). Set via the DATA_PROVIDER
      * environment variable. Both provisioning paths and both reconcilers
