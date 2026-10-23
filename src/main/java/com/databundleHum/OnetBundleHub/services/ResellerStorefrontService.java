@@ -77,6 +77,7 @@ public class ResellerStorefrontService {
     private final WalletService              walletService;
     private final PaystackService             paystackService;
     private final BigDreamsDataService          bigDreamsDataService;
+    private final EmmaDataKingService           emmaDataKingService;
     private final NotificationService        notificationService;
     private final UnverifiedRecipientService unverifiedRecipientService;
     private final OrderService               orderService;
@@ -650,8 +651,12 @@ public class ResellerStorefrontService {
                 .build();
     }
 
-    // ── Big Dreams bundle provisioning helper ────────────────────────────────
+    // ── Bundle provisioning helpers ──────────────────────────────────────────
     private void provisionOrder(Order order) {
+        if (appConfig.isEmmaProvider()) {
+            provisionViaEmma(order);
+            return;
+        }
         String providerNetwork = switch (order.getNetwork()) {
             case MTN -> "mtn";
             case TELECEL -> "telecel";
@@ -673,6 +678,22 @@ public class ResellerStorefrontService {
         orderRepository.save(order);
         log.info("[STOREFRONT] Big Dreams accepted orderId={} providerOrderId={} reference={} status={}",
                 order.getId(), result.orderId(), result.reference(), result.status());
+    }
+
+    /**
+     * EmmaDataKing path (the active provider): one purchase call for every
+     * network, resolved to the cheapest in-stock package by
+     * EmmaDataKingService. Status is mapped from the provider's verdict,
+     * same as the Big Dreams path below.
+     */
+    private void provisionViaEmma(Order order) {
+        EmmaDataKingService.PurchaseResult purchase = emmaDataKingService.buyForOrder(order);
+        order.setDbhPurchaseId(null);
+        order.setDbhReference("datapack-" + order.getId());
+        order.setStatus(toOrderStatus(purchase.status()));
+        orderRepository.save(order);
+        log.info("[STOREFRONT] EmmaDataKing accepted orderId={} providerId={} reference={} status={}",
+                order.getId(), purchase.providerId(), order.getDbhReference(), purchase.status());
     }
 
     /** Same provider-status mapping OrderService applies to its orders. */
