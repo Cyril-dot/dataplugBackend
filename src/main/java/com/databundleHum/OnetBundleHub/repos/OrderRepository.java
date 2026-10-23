@@ -38,6 +38,31 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
     Page<Order> findByUserAndOrderedByRoleOrderByCreatedAtDesc(
             User user, Order.OrderedByRole role, Pageable pageable);
 
+    // ── Reseller order history (storefront sales + wholesale) ────────────────
+
+    /**
+     * Everything a reseller's Order History shows: every order sold through
+     * their storefront (resellerProfile = profile — guest orders have no
+     * user, logged-in storefront orders belong to the customer) PLUS the
+     * reseller's own wholesale orders (user = reseller, role RESELLER).
+     * The previous implementation queried only the wholesale half, so
+     * storefront sales never appeared in the reseller's history at all.
+     * Sort comes from the Pageable (controller passes createdAt DESC).
+     */
+    @Query("SELECT o FROM Order o WHERE o.resellerProfile = :profile "
+            + "OR (o.user = :user AND o.orderedByRole = :role)")
+    Page<Order> findResellerOrders(@Param("profile") ResellerProfile profile,
+                                   @Param("user") User user,
+                                   @Param("role") Order.OrderedByRole role,
+                                   Pageable pageable);
+
+    /** Count matching findResellerOrders — feeds the dashboard order total. */
+    @Query("SELECT COUNT(o) FROM Order o WHERE o.resellerProfile = :profile "
+            + "OR (o.user = :user AND o.orderedByRole = :role)")
+    long countResellerOrders(@Param("profile") ResellerProfile profile,
+                             @Param("user") User user,
+                             @Param("role") Order.OrderedByRole role);
+
     /** Total orders placed by a user regardless of role — used for sub-customer stats. */
     long countByUser(User user);
 
