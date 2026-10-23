@@ -113,6 +113,7 @@ public class OrderService {
     private final WalletService               walletService;
     private final PaystackService              paystackService;
     private final BigDreamsDataService          bigDreamsDataService;
+    private final EmmaDataKingService           emmaDataKingService;
     private final NotificationService         notificationService;
     private final UnverifiedRecipientService  unverifiedRecipientService;
     private final AffiliateCommissionService  affiliateCommissionService;
@@ -856,6 +857,25 @@ public class OrderService {
                 user.getEmail(), user.getFullName(), order.getId(), ex.getMessage());
     }
 
+    // ── EmmaDataKing provisioning helper ─────────────────────────────────────
+    /**
+     * Places the paid order through EmmaDataKing (the active provider).
+     * One purchase call covers every network: EmmaDataKingService resolves
+     * the order's network + size to the cheapest in-stock package across
+     * the carrier's families. Our reference ("datapack-{orderId}") is stored
+     * as the provider reference — Emma's status endpoint accepts it, and
+     * EmmaDataKingService.reconcilePendingOrders polls it to completion.
+     */
+    private void provisionViaEmma(Order order) {
+        EmmaDataKingService.PurchaseResult purchase = emmaDataKingService.buyForOrder(order);
+        order.setDbhPurchaseId(null);
+        order.setDbhReference("datapack-" + order.getId());
+        order.setStatus(toOrderStatus(purchase.status()));
+        orderRepository.save(order);
+        log.info("[ORDER] EmmaDataKing accepted: orderId={} providerId={} status={}",
+                order.getId(), purchase.providerId(), purchase.status());
+    }
+
     // ── Big Dreams provisioning helper ────────────────────────────────────────
     /**
      * Places the paid order through the documented Big Dreams Share Bundles
@@ -865,6 +885,10 @@ public class OrderService {
      * order_id so retries cannot charge the share balance twice.
      */
     private void provisionOrder(Order order) {
+        if (appConfig.isEmmaProvider()) {
+            provisionViaEmma(order);
+            return;
+        }
         String providerOrderId = "datapack-" + order.getId();
         BigDreamsDataService.ShareResult result;
         switch (order.getNetwork()) {
