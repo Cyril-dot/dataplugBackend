@@ -23,7 +23,7 @@ public class VersionController {
     public ResponseEntity<Map<String, String>> version() {
         return ResponseEntity.ok(Map.of(
                 "service", "dataplug-backend",
-                "build", "2026-10-23-emma-provider"
+                "build", "2026-10-23-emma-provider-r2"
         ));
     }
 }
