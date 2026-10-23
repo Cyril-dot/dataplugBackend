@@ -55,6 +55,38 @@ public class AppConfig {
     @Value("${bigdreams.base-url:https://qrzjkrkawcdoaggblvjc.supabase.co/functions/v1/developer-api}")
     private String bigDreamsBaseUrl;
 
+    // ── EmmaDataKing ────────────────────────────────────────────────────────
+
+    /**
+     * API key issued by the EmmaDataKing developer portal
+     * (emmadataking.com/agent/developer — keys start with edk_live_).
+     * Supply via environment variable EMMADATAKING_API_KEY in production —
+     * never hard-code or commit this value.
+     */
+    @Value("${emmadataking.api-key:}")
+    private String emmaDataKingApiKey;
+
+    /**
+     * Base URL for all EmmaDataKing API calls.
+     * Override via EMMADATAKING_BASE_URL if the provider migrates domains.
+     */
+    @Value("${emmadataking.base-url:https://emmadataking.com}")
+    private String emmaDataKingBaseUrl;
+
+    /**
+     * Active data-bundle provider: "emma" (default since the Oct 2026
+     * cutover) or "bigdreams" (rollback). Set via the DATA_PROVIDER
+     * environment variable. Both provisioning paths and both reconcilers
+     * consult this switch, so a rollback is a single env change + restart.
+     */
+    @Value("${data.provider:emma}")
+    private String dataProvider;
+
+    /** True when EmmaDataKing is the active fulfilment provider. */
+    public boolean isEmmaProvider() {
+        return !"bigdreams".equalsIgnoreCase(dataProvider);
+    }
+
     // ── Platform ──────────────────────────────────────────────────────────────
 
     /** Canonical public site URL used in referral links and non-browser redirects. */
@@ -77,6 +109,24 @@ public class AppConfig {
         return WebClient.builder()
                 .baseUrl(bigDreamsBaseUrl)
                 .defaultHeader("x-api-key",     bigDreamsApiKey)
+                .defaultHeader("Content-Type",  "application/json")
+                .defaultHeader("Accept",        "application/json")
+                .build();
+    }
+
+    /**
+     * Shared WebClient for all EmmaDataKing Data API calls.
+     *
+     * The X-API-Key header is set as a default and sent automatically on
+     * every request. Callers address the versioned paths
+     * (/api/v1/purchase, /api/v1/order-status/{ref}, /api/v1/packages,
+     * /api/v1/balance) against this base URL.
+     */
+    @Bean(name = "emmaDataKingWebClient")
+    public WebClient emmaDataKingWebClient() {
+        return WebClient.builder()
+                .baseUrl(emmaDataKingBaseUrl)
+                .defaultHeader("X-API-Key",     emmaDataKingApiKey)
                 .defaultHeader("Content-Type",  "application/json")
                 .defaultHeader("Accept",        "application/json")
                 .build();
