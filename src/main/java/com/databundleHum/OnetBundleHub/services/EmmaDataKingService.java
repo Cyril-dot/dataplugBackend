@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * EmmaDataKing Developer API integration (https://emmadataking.com/agent/developer).
@@ -145,6 +146,20 @@ public class EmmaDataKingService {
                     "This bundle size is currently unavailable. Please try another size or check back shortly.");
         }
         return best;
+    }
+
+    /**
+     * Non-throwing cheapest-package lookup for the admin Emma pricing view.
+     * Returns empty when Emma does not stock this network + size right now
+     * (or the catalogue is unreachable), so the pricing table can still
+     * render the platform row with an "Unavailable" Emma cost.
+     */
+    public Optional<PackageOption> findPackage(PlatformSettings.Network network, BigDecimal capacityGb) {
+        try {
+            return Optional.of(resolvePackage(network, capacityGb));
+        } catch (UpstreamApiException ex) {
+            return Optional.empty();
+        }
     }
 
     // ══════════════════════════════════════════════════════════════════════
