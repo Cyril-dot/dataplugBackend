@@ -43,13 +43,14 @@ public class WalletServiceImpl implements WalletService {
         User user = userRepository.findByIdForUpdate(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
 
-        if (user.getWalletBalance().compareTo(amount) < 0) {
+        BigDecimal currentBalance = currentBalance(user);
+        if (currentBalance.compareTo(amount) < 0) {
             throw new InsufficientBalanceException(
-                    "Wallet balance GHS " + user.getWalletBalance()
+                    "Wallet balance GHS " + currentBalance
                             + " is insufficient. Required: GHS " + amount);
         }
 
-        BigDecimal newBalance = user.getWalletBalance().subtract(amount);
+        BigDecimal newBalance = currentBalance.subtract(amount);
         user.setWalletBalance(newBalance);
         userRepository.save(user);
 
@@ -69,7 +70,7 @@ public class WalletServiceImpl implements WalletService {
         User user = userRepository.findByIdForUpdate(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
 
-        BigDecimal newBalance = user.getWalletBalance().add(amount);
+        BigDecimal newBalance = currentBalance(user).add(amount);
         user.setWalletBalance(newBalance);
         userRepository.save(user);
 
@@ -86,6 +87,21 @@ public class WalletServiceImpl implements WalletService {
     public BigDecimal getBalance(UUID userId) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
+        return currentBalance(user);
+    }
+
+    /**
+     * Some user rows predate the wallet_balance backfill and still carry NULL.
+     * Calling .add()/.compareTo() on that NULL threw a NullPointerException,
+     * which surfaced as a bare 500 — this is what broke admin Add money for
+     * affected users. NULL is treated as GHS 0, and the first successful
+     * mutation writes a real balance back, so the row self-heals.
+     */
+    private BigDecimal currentBalance(User user) {
+        if (user.getWalletBalance() == null) {
+            log.warn("[WALLET] Null wallet_balance for userId={} — treating as 0", user.getId());
+            return BigDecimal.ZERO;
+        }
         return user.getWalletBalance();
     }
 
