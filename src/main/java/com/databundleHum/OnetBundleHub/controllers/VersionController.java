@@ -23,7 +23,7 @@ public class VersionController {
     public ResponseEntity<Map<String, String>> version() {
         return ResponseEntity.ok(Map.of(
                 "service", "dataplug-backend",
-                "build", "2026-10-25-wallet-type-check"
+                "build", "2026-10-30-cors-dattapack"
         ));
     }
 }

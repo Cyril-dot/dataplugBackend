@@ -62,7 +62,9 @@ public class SecurityConfig {
 
     private static final List<String> REQUIRED_SITE_ORIGINS = List.of(
             "https://datapackk.shop",
-            "https://www.datapackk.shop");
+            "https://www.datapackk.shop",
+            "https://dattapack.site",
+            "https://www.dattapack.site");
 
     @Value("${app.cors.allowed-origins:http://localhost:3000,http://localhost:4028,http://localhost:5173,https://datapackk.shop,https://www.datapackk.shop}")
     private String allowedOrigins;
