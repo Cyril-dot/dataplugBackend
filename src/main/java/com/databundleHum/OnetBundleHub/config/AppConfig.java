@@ -98,7 +98,7 @@ public class AppConfig {
     // ── Platform ──────────────────────────────────────────────────────────────
 
     /** Canonical public site URL used in referral links and non-browser redirects. */
-    private String appBaseUrl = "https://www.datapackk.shop";
+    private String appBaseUrl = "https://www.datapackk.site";
 
     // ── WebClient bean ────────────────────────────────────────────────────────
 
