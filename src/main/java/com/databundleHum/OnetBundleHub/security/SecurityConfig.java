@@ -64,7 +64,8 @@ public class SecurityConfig {
             "https://datapackk.shop",
             "https://www.datapackk.shop",
             "https://dattapack.site",
-            "https://www.dattapack.site");
+            "https://www.dattapack.site",
+            "https://datapackk.vercel.app");
 
     @Value("${app.cors.allowed-origins:http://localhost:3000,http://localhost:4028,http://localhost:5173,https://datapackk.shop,https://www.datapackk.shop}")
     private String allowedOrigins;
